@@ -1,7 +1,7 @@
 /**
  * YZJ Robot Webhook 类型定义
  *
- * 提供与云之家(YZJ) Robot Webhook API 交互所需的接口定义
+ * 提供与云之家 (YZJ) Robot Webhook API 交互所需的接口定义
  */
 
 /**
@@ -18,17 +18,17 @@ export enum MessageType {
 export interface YZJIncomingMessage {
   /** 消息类型 */
   type: number;
-  /** 机器人ID */
+  /** 机器人 ID */
   robotId: string;
   /** 机器人名称 */
   robotName: string;
-  /** 发送者OpenID */
+  /** 发送者 OpenID */
   operatorOpenid: string;
   /** 发送者姓名 */
   operatorName: string;
   /** 时间戳 */
   time: number;
-  /** 消息ID */
+  /** 消息 ID */
   msgId: string;
   /** 消息内容 */
   content: string;
@@ -69,12 +69,14 @@ export interface YZJAccountConfig {
   enabled?: boolean;
   /** 账户名称 */
   name?: string;
-  /** 发送消息的URL（必需） */
+  /** 发送消息的 URL（必需） */
   sendMsgUrl?: string;
-  /** Webhook路径（可选，默认 /yzj/webhook） */
+  /** Webhook 路径（可选，默认 /yzj/webhook） */
   webhookPath?: string;
-  /** 超时时间（可选，默认10秒） */
+  /** 超时时间（可选，默认 10 秒） */
   timeout?: number;
+  /** 签名验证密钥（用于验证来自云之家的请求） */
+  secret?: string;
 }
 
 /**
@@ -83,11 +85,11 @@ export interface YZJAccountConfig {
 export interface YZJConfig {
   /** 是否启用 */
   enabled?: boolean;
-  /** 默认账户ID */
+  /** 默认账户 ID */
   defaultAccount?: string;
-  /** 发送消息的URL（全局配置） */
+  /** 发送消息的 URL（全局配置） */
   sendMsgUrl?: string;
-  /** Webhook路径（全局配置） */
+  /** Webhook 路径（全局配置） */
   webhookPath?: string;
   /** 超时时间（全局配置） */
   timeout?: number;
@@ -99,7 +101,7 @@ export interface YZJConfig {
  * 解析后的 YZJ 账户信息
  */
 export interface ResolvedYZJAccount {
-  /** 账户ID */
+  /** 账户 ID */
   accountId: string;
   /** 账户名称 */
   name?: string;
@@ -107,12 +109,36 @@ export interface ResolvedYZJAccount {
   enabled: boolean;
   /** 是否已配置 */
   configured: boolean;
-  /** 发送消息的URL */
+  /** 发送消息的 URL */
   sendMsgUrl: string;
-  /** Webhook路径 */
+  /** Webhook 路径 */
   webhookPath: string;
   /** 超时时间 */
   timeout: number;
+  /** 签名验证密钥 */
+  secret?: string;
   /** 原始配置 */
   config: YZJAccountConfig;
+}
+
+/**
+ * Webhook 请求头中的签名信息
+ */
+export interface YZJWebhookHeaders {
+  /** 签名值 */
+  sign?: string;
+  /** 会话 ID */
+  sessionId?: string;
+  /** 内容类型 */
+  "content-type"?: string;
+}
+
+/**
+ * 签名验证结果
+ */
+export interface SignatureVerificationResult {
+  /** 验证是否通过 */
+  valid: boolean;
+  /** 错误信息（如果验证失败） */
+  error?: string;
 }

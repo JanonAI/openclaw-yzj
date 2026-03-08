@@ -15,6 +15,7 @@ const accountSchema = {
     sendMsgUrl: { type: "string" },
     webhookPath: { type: "string" },
     timeout: { type: "number" },
+    secret: { type: "string" },
   },
   required: ["sendMsgUrl"],
   additionalProperties: false,

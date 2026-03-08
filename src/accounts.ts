@@ -87,6 +87,7 @@ export function resolveYZJAccount(params: {
     sendMsgUrl,
     webhookPath,
     timeout,
+    secret: merged.secret,
     config: merged,
   };
 }

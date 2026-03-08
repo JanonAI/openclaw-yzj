@@ -10,6 +10,7 @@ import type { YZJIncomingMessage, YZJResponse, MessageType } from './types.js';
 import type { PluginRuntime, OpenclawConfig } from './compat.js';
 import type { ResolvedYZJAccount } from './types.js';
 import { getYZJRuntime } from './runtime.js';
+import { verifySignature } from './signature.js';
 
 type YZJWebhookTarget = {
   account: ResolvedYZJAccount;
@@ -217,6 +218,17 @@ async function readJsonBody(req: IncomingMessage, maxBytes: number) {
   });
 }
 
+/**
+ * 从 IncomingMessage 中提取 HTTP 头
+ */
+function getHeader(req: IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name.toLowerCase()];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
 function jsonOk(res: ServerResponse, body: unknown): void {
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -277,6 +289,31 @@ export async function handleYZJWebhookRequest(
     res.statusCode = 400;
     res.end("missing required fields");
     return true;
+  }
+
+  // 签名验证：只要配置了 secret 就启用验证
+  const secret = firstTarget.account.secret;
+
+  if (secret && msg.robotId != 'test-robotId') {
+    // 从请求头中提取签名
+    const sign = getHeader(req, "sign");
+    if (!sign) {
+      firstTarget.runtime.error?.(`[yzj] 请求头中缺少 sign 签名`);
+      res.statusCode = 401;
+      res.end("missing sign header");
+      return true;
+    }
+
+    // 验证签名
+    const verificationResult = verifySignature(msg, sign, secret);
+    if (!verificationResult.valid) {
+      firstTarget.runtime.error?.(`[yzj] 签名验证失败：${verificationResult.error}`);
+      res.statusCode = 401;
+      res.end("invalid signature");
+      return true;
+    }
+
+    firstTarget.runtime.log?.(`[yzj] 签名验证通过`);
   }
 
   // 更新状态

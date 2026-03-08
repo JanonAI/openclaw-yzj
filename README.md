@@ -162,6 +162,114 @@ gateway:
 | `sendMsgUrl` | string | **是** | - | 发送消息的 API URL |
 | `webhookPath` | string | 否 | - | Webhook 接收路径（继承通道级别配置） |
 | `timeout` | number | 否 | - | 请求超时时间（秒，继承通道级别配置） |
+| `secret` | string | 否 | - | 签名验证密钥（配置后自动启用签名验证） |
+
+注：配置 `secret` 后会自动启用签名验证，不配置则不进行签名验证。
+
+## 签名验证
+
+### 概述
+
+为了确保请求来自云之家，避免仿冒请求，插件支持签名验证功能。当启用签名验证时，插件会验证每个 Webhook 请求的签名。
+
+### 签名算法
+
+云之家使用 HmacSHA1 算法进行签名：
+
+1. **构建签名字符串**：将消息字段按顺序用逗号拼接
+   ```
+   robotId,robotName,operatorOpenid,operatorName,time,msgId,content
+   ```
+
+2. **计算签名**：使用 `secret` 作为密钥，对签名字符串进行 HmacSHA1 签名
+
+3. **Base64 编码**：将签名结果进行 Base64 编码得到最终签名值
+
+### 配置签名验证
+
+配置 `secret` 后会自动启用签名验证：
+
+```yaml
+channels:
+  yzj:
+    enabled: true
+    sendMsgUrl: "https://www.yunzhijia.com/robot/send"
+    webhookPath: "/yzj/webhook"
+
+    # 多账户配置
+    accounts:
+      bot1:
+        name: "生产环境机器人"
+        enabled: true
+        sendMsgUrl: "https://www.yunzhijia.com/robot/send"
+        webhookPath: "/yzj/bot1"
+        # 签名验证密钥（配置后自动启用验证）
+        secret: "your-app-secret-here"
+```
+
+### 禁用签名验证
+
+如果仅在受信任的内网环境部署，不配置 `secret` 即可禁用签名验证：
+
+```yaml
+channels:
+  yzj:
+    enabled: true
+    sendMsgUrl: "https://www.yunzhijia.com/robot/send"
+    accounts:
+      bot1:
+        name: "内网机器人"
+        enabled: true
+        sendMsgUrl: "https://intranet.yunzhijia.com/robot/send"
+        # 不配置 secret，不进行签名验证
+```
+
+### 签名验证流程
+
+```
+1. 云之家发起请求
+   ↓
+2. 插件接收请求，读取 body
+   ↓
+3. 检查是否配置了 secret
+   ↓
+4. 从请求头中提取 sign
+   ↓
+5. 使用相同的算法计算期望签名
+   ↓
+6. 比较签名是否一致
+   ↓
+7. 验证通过：处理消息 | 验证失败：返回 401 错误
+```
+
+### 测试签名验证
+
+使用以下命令测试 Webhook（需要正确的签名）：
+
+```bash
+# 示例：使用正确的签名
+curl -X POST http://localhost:3000/yzj/webhook \
+  -H "Content-Type: application/json" \
+  -H "sign: <computed-signature>" \
+  -d '{
+    "type": 2,
+    "robotId": "test_bot",
+    "robotName": "测试",
+    "operatorOpenid": "test_user",
+    "operatorName": "测试用户",
+    "time": 1678901234567,
+    "msgId": "test_msg",
+    "content": "测试消息"
+  }'
+```
+
+### 签名验证错误处理
+
+| 错误情况 | HTTP 状态码 | 说明 |
+|----------|-------------|------|
+| 缺少 sign 头 | 401 | 请求头中缺少签名信息 |
+| 签名不匹配 | 401 | 签名值与计算结果不一致 |
+| 未配置 secret | 500 | 启用了签名验证但未配置密钥 |
 
 ## 消息格式
 
@@ -517,7 +625,7 @@ index.ts (入口)
 
 ### 版本信息
 
-- **当前版本**: 2026.3.6
+- **当前版本**: 2026.3.8
 - **包名**: @openclaw/yzj
 - **发布日期**: 2026-03-06
 
@@ -629,7 +737,7 @@ interface YZJOutgoingMessage {
 
 **包信息**
 - **包名**: @openclaw/yzj
-- **版本**: 2026.3.6
+- **版本**: 2026.3.8
 - **描述**: OpenClaw YZJ (Yunzhijia) intelligent bot channel plugin
 - **模块类型**: ESM
 - **插件 ID**: yzj
