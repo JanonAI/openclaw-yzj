@@ -63,6 +63,7 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
   id: "yzj",
   meta,
   onboarding: yzjOnboardingAdapter,
+  setupWizard: yzjOnboardingAdapter,
   capabilities: {
     chatTypes: ["direct", "group"],
     media: false,

@@ -4,7 +4,7 @@
  * 提供交互式配置向导，帮助用户设置 YZJ Robot 账户
  */
 
-import type { ChannelOnboardingAdapter, OpenclawConfig, WizardPrompter } from './compat.js';
+import type { ChannelSetupWizardAdapter, OpenclawConfig, WizardPrompter } from './compat.js';
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from './compat.js';
 
 import { listYZJAccountIds, resolveDefaultYZJAccountId, resolveYZJAccount } from './accounts.js';
@@ -36,7 +36,7 @@ function inboundModeLabel(mode: YZJInboundMode): string {
 /**
  * YZJ 配置向导适配器
  */
-export const yzjOnboardingAdapter: ChannelOnboardingAdapter = {
+export const yzjOnboardingAdapter: ChannelSetupWizardAdapter = {
   channel,
 
   /**
