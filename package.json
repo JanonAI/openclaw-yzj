@@ -1,6 +1,6 @@
 {
   "name": "yzj",
-  "version": "2026.4.8",
+  "version": "2026.4.9",
   "type": "module",
   "description": "OpenClaw YZJ (Yunzhijia) intelligent bot channel plugin",
   "openclaw": {
@@ -52,6 +52,12 @@
       "localPath": "extensions/yzj",
       "defaultChoice": "npm"
     }
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.0.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.2.24"

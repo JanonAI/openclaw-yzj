@@ -1,3 +1,16 @@
+let WebSocketImpl: typeof import("ws") | undefined;
+let wsLoadPromise: Promise<typeof import("ws")> | null = null;
+
+function loadWs(): Promise<typeof import("ws")> {
+  if (WebSocketImpl) return Promise.resolve(WebSocketImpl);
+  if (wsLoadPromise) return wsLoadPromise;
+  wsLoadPromise = import("ws").then((m) => {
+    WebSocketImpl = m.default;
+    return m;
+  });
+  return wsLoadPromise;
+}
+
 import { dispatchInboundMessage } from "./inbound-dispatcher.js";
 import {
   classifyWebSocketPayload,
@@ -23,7 +36,7 @@ type WebSocketLike = {
   ping?: () => void;
 };
 
-type WebSocketFactory = (url: string) => WebSocketLike;
+type WebSocketFactory = (url: string) => WebSocketLike | Promise<WebSocketLike>;
 
 type TimerApi = {
   setTimeout: typeof setTimeout;
@@ -42,8 +55,19 @@ type YZJWebSocketClientOptions = {
   onDegraded?: (message: string) => void;
 };
 
-function defaultWebSocketFactory(url: string): WebSocketLike {
-  return new WebSocket(url) as unknown as WebSocketLike;
+async function defaultWebSocketFactory(url: string): Promise<WebSocketLike> {
+  try {
+    await loadWs();
+    if (WebSocketImpl) {
+      return new WebSocketImpl(url, { rejectUnauthorized: false }) as unknown as WebSocketLike;
+    }
+  } catch {
+    // ws not available, fall back to native WebSocket
+  }
+  if (typeof globalThis.WebSocket !== "undefined") {
+    return new globalThis.WebSocket(url) as unknown as WebSocketLike;
+  }
+  throw new Error("No WebSocket implementation available");
 }
 
 function logInfo(logger: YZJLogger, message: string): void {
@@ -106,10 +130,19 @@ export class YZJWebSocketClient {
     if (this.stopped) return;
 
     try {
-      const socket = this.createSocket(this.url);
-      this.socket = socket;
-      this.bindSocket(socket);
-      logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket connecting`);
+      const result = this.createSocket(this.url);
+      const promise = result instanceof Promise ? result : Promise.resolve(result);
+      promise.then(
+        (socket) => {
+          if (this.stopped) return;
+          this.socket = socket;
+          this.bindSocket(socket);
+          logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket connecting`);
+        },
+        (error) => {
+          this.scheduleReconnect(`websocket connect failed: ${error instanceof Error ? error.message : String(error)}`);
+        },
+      );
     } catch (error) {
       this.scheduleReconnect(`websocket connect failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -170,7 +203,7 @@ export class YZJWebSocketClient {
     if (classified.kind === "control") {
       this.handleControlPayload(payload);
       if (classified.reason === "auth") {
-        this.logger.warn?.(`[${this.target.account.accountId}] yzj websocket auth success`);
+        this.logger.info?.(`[${this.target.account.accountId}] yzj websocket auth success`);
       }
       if (classified.ack && this.socket?.readyState === 1) {
         this.socket.send(classified.ack);
