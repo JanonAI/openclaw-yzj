@@ -36,6 +36,8 @@ export interface YZJIncomingMessage {
   content: string;
   /** 群组类型 */
   groupType: number;
+  /** 群组 ID */
+  groupId?: string;
 }
 
 /**
@@ -73,6 +75,12 @@ export interface YZJAccountConfig {
   enabled?: boolean;
   /** 账户名称 */
   name?: string;
+  /** 云之家开放平台地址 */
+  endpoint?: string;
+  /** 云之家应用 ID */
+  appId?: string;
+  /** 云之家应用密钥 */
+  appSecret?: string;
   /** 发送消息的 URL（必需） */
   sendMsgUrl?: string;
   /** Webhook 路径（可选，默认 /yzj/webhook） */
@@ -81,6 +89,8 @@ export interface YZJAccountConfig {
   timeout?: number;
   /** 入站模式（可选，默认 webhook） */
   inboundMode?: YZJInboundMode;
+  /** 允许机器人读取并发送的本机媒体目录 */
+  mediaLocalRoots?: string[];
   /** 签名验证密钥（用于验证来自云之家的请求） */
   secret?: string;
 }
@@ -93,6 +103,12 @@ export interface YZJConfig {
   enabled?: boolean;
   /** 默认账户 ID */
   defaultAccount?: string;
+  /** 云之家开放平台地址（全局配置） */
+  endpoint?: string;
+  /** 云之家应用 ID（全局配置） */
+  appId?: string;
+  /** 云之家应用密钥（全局配置） */
+  appSecret?: string;
   /** 发送消息的 URL（全局配置） */
   sendMsgUrl?: string;
   /** Webhook 路径（全局配置） */
@@ -101,6 +117,8 @@ export interface YZJConfig {
   timeout?: number;
   /** 入站模式默认值（全局配置） */
   inboundMode?: YZJInboundMode;
+  /** 允许机器人读取并发送的本机媒体目录 */
+  mediaLocalRoots?: string[];
   /** 多账户配置 */
   accounts?: Record<string, YZJAccountConfig>;
 }
@@ -117,6 +135,12 @@ export interface ResolvedYZJAccount {
   enabled: boolean;
   /** 是否已配置 */
   configured: boolean;
+  /** 云之家开放平台地址 */
+  endpoint: string;
+  /** 云之家应用 ID */
+  appId: string;
+  /** 云之家应用密钥 */
+  appSecret: string;
   /** 发送消息的 URL */
   sendMsgUrl: string;
   /** Webhook 路径 */
@@ -125,6 +149,8 @@ export interface ResolvedYZJAccount {
   timeout: number;
   /** 入站模式 */
   inboundMode: YZJInboundMode;
+  /** 允许机器人读取并发送的本机媒体目录 */
+  mediaLocalRoots: string[];
   /** 签名验证密钥 */
   secret?: string;
   /** 原始配置 */

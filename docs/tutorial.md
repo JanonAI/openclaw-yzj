@@ -30,7 +30,7 @@
 
 ## 3.OpenClaw与云之家集成
 
-> 当前插件同时支持 `webhook` 和 `websocket` 两种入站模式。若使用 `websocket`，插件会从机器人回调地址自动推导 WebSocket 长连接地址；若使用 `webhook`，仍需保证 OpenClaw 能被云之家回调访问。这里以阿里云公网 IP OpenClaw 举例。
+> 当前插件同时支持 `webhook` 和 `websocket` 两种入站模式。个人机器人按原流程配置 `sendMsgUrl` 即可收发文本消息；如果额外配置应用机器人 `appId/appSecret`，还可以使用应用机器人长连接和媒体发送能力。
 
 - 远程连接服务器终端
 
@@ -79,7 +79,7 @@
   > 可以按需选择：
   >
   > - `inboundMode: webhook`：仅通过 `webhookPath` 接收入站消息
-  > - `inboundMode: websocket`：插件自动从 `sendMsgUrl` 推导 WebSocket 地址建立长连接，同时保留 `webhookPath` 作为兜底入口
+  > - `inboundMode: websocket`：个人机器人会从 `sendMsgUrl` 推导 WebSocket 地址建立长连接，同时保留 `webhookPath` 作为兜底入口；应用机器人会使用 `appId/appSecret` 建立长连接
 
 - Save - OpenClaw Gateway会自动重启，待重启成功后
 
@@ -100,11 +100,13 @@ http://${你的OpenClaw WebUI公网IP及端口}/yzj/webhook
 
    <img src="./imgs/image-20260308194757828.png" alt="image-20260308194757828" style="zoom:50%;" />
 
-- 机器人创建成功后，将webhook地址回填至OpenClaw YZJ插件中的Send Msg Url中，否则机器人是不会回复你的消息的。
+- 机器人创建成功后，将发送消息接口地址回填至 OpenClaw YZJ 插件中的 `sendMsgUrl`，否则机器人不会回复你的消息。
 
     <img src="./imgs/image-20260308194953809.png" alt="image-20260308195140392" style="zoom:50%;" />
 
-​	复制webhook地址回填至Send Msg Url中，就配置完成了！
+​	复制发送消息接口地址回填到 `sendMsgUrl` 中，就配置完成了。
+
+  > 如果你使用应用机器人，还可以额外填写 `appId` 和 `appSecret`，并选择 `websocket` 入站模式。应用机器人支持文本、文件、图片和 mp4 视频发送。
 
 ![image-20260308195239741](./imgs/image-20260308195239741.png)
 
@@ -112,4 +114,4 @@ http://${你的OpenClaw WebUI公网IP及端口}/yzj/webhook
 
 ![image-20260308195646381](./imgs/image-20260308195646381.png)
 
-到这里，公有云OpenClaw与云之家集成就完成了~
+到这里，公有云 OpenClaw 与云之家集成就完成了。

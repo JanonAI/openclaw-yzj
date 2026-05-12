@@ -5,20 +5,26 @@
  *
  */
 
-import type { ChannelConfigSchema } from "./compat.js";
+import type { ChannelConfigSchema } from "./compat.ts";
 
 const accountSchema = {
   type: "object",
   properties: {
     name: { type: "string" },
     enabled: { type: "boolean" },
+    endpoint: { type: "string" },
+    appId: { type: "string" },
+    appSecret: { type: "string" },
     sendMsgUrl: { type: "string" },
     webhookPath: { type: "string" },
     timeout: { type: "number" },
     inboundMode: { type: "string", enum: ["webhook", "websocket"] },
+    mediaLocalRoots: {
+      type: "array",
+      items: { type: "string" },
+    },
     secret: { type: "string" },
   },
-  required: ["sendMsgUrl"],
   additionalProperties: false,
 };
 
@@ -29,27 +35,22 @@ export const yzjConfigSchema: ChannelConfigSchema = {
     properties: {
       name: { type: "string" },
       enabled: { type: "boolean" },
+      endpoint: { type: "string", default: "https://yunzhijia.com" },
+      appId: { type: "string" },
+      appSecret: { type: "string" },
       sendMsgUrl: { type: "string" },
       webhookPath: { type: "string", default: "/yzj/webhook" },
       timeout: { type: "number", default: 10 },
       inboundMode: { type: "string", enum: ["webhook", "websocket"], default: "webhook" },
+      mediaLocalRoots: {
+        type: "array",
+        items: { type: "string" },
+      },
       defaultAccount: { type: "string" },
       accounts: {
         type: "object",
         additionalProperties: accountSchema,
       },
-    },
-    // 条件必需验证
-    if: {
-      required: ["accounts"]
-    },
-    then: {
-      // 有 accounts 时：sendMsgUrl 可选
-      required: []
-    },
-    else: {
-      // 无 accounts 时：sendMsgUrl 必需
-      required: ["sendMsgUrl"]
     },
     additionalProperties: false,
   },

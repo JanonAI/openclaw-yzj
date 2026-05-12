@@ -205,7 +205,10 @@ export function formatPairingApproveHint(channelId: string): string {
 
 export type OpenclawConfig = ImportedOpenClawConfig;
 export type ClawdbotConfig = ImportedOpenClawConfig;
-export type OpenClawPluginApi = ImportedOpenClawPluginApi;
+export type OpenClawPluginApi = Omit<ImportedOpenClawPluginApi, "registerChannel"> & {
+  registerChannel: (registration: { plugin: ChannelPlugin } | ChannelPlugin) => void;
+};
+export type OpenclawPluginApi = OpenClawPluginApi;
 export type ClawdbotPluginApi = ImportedOpenClawPluginApi;
 export type PluginRuntime = ImportedPluginRuntime;
 export type WizardPrompter = ImportedWizardPrompter;
@@ -293,7 +296,7 @@ export type ChannelOnboardingAdapter = {
 export type ChannelSetupWizardAdapter = ChannelOnboardingAdapter;
 
 export type ChannelPlugin<ResolvedAccount = any, Probe = unknown, Audit = unknown> =
-  OpenClawChannelPlugin<ResolvedAccount, Probe, Audit> & {
+  Omit<OpenClawChannelPlugin<ResolvedAccount, Probe, Audit>, "setupWizard"> & {
     onboarding?: ChannelOnboardingAdapter;
     setupWizard?: ChannelSetupWizardAdapter;
   };

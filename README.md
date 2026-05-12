@@ -7,10 +7,13 @@
 ## 功能特性
 
 - **HTTP API 集成**：通过云之家 API 发送消息
+- **应用机器人集成（新增）**：配置 `appId`、`appSecret` 后，插件可接收应用机器人消息，并支持发送文本、文件、图片和 mp4 视频
 - **Webhook 接收**：接收云之家机器人的消息推送
 - **WebSocket 接收**：从 `sendMsgUrl` 自动推导 WebSocket 长连接地址并接收入站消息
+- **应用机器人 WebSocket（新增）**：应用机器人也支持长连接接收
 - **双入口去重**：当 Webhook 和 WebSocket 同时收到同一条消息时，按 `msgId` 自动去重
 - **主动发消息**：支持主动向指定用户发送消息（通过 OpenID 指定接收者）
+- **媒体发送（新增）**：应用机器人可发送文件、图片和 mp4 视频；个人机器人 `sendMsgUrl` 模式仍只支持文本
 - **OpenClaw HTTP 处理器**：使用 OpenClaw 内置的 HTTP 处理器（Node.js 原生 http 模块）
 - **多账户支持**：支持配置多个云之家机器人账户
 - **完整类型支持**：TypeScript 类型安全
@@ -59,7 +62,7 @@ openclaw gateway restart
 ```text
 1. 看一下这个地址：https://github.com/JanonAI/openclaw-yzj
 2. 配置 yzj channel，使用 websocket 模式
-3. webhook 地址是：https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=xxxxxxxxxxxxxxxxxx
+3. sendMsgUrl 是：https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=xxxxxxxxxxxxxxxxxx
 ```
 
 如果希望它直接通过 ZIP 安装，也可以把第 1 句换成：
@@ -121,6 +124,13 @@ wget https://github.com/JanonAI/openclaw-yzj/archive/refs/tags/v2026.3.6.zip
 openclaw plugins install ./develop.zip  # 或 ./v2026.3.6.zip
 ```
 
+### 方式 D：本地开发（link）
+
+```bash
+openclaw plugins install --link extensions/yzj
+openclaw plugins enable yzj
+openclaw gateway restart
+```
 
 ### 方式 E：WorkBuddy 直接配置（推荐中国区用户）
 
@@ -171,15 +181,6 @@ openclaw plugins install ./develop.zip  # 或 ./v2026.3.6.zip
 2. 进入「应用管理」→「机器人」，创建或查看已有机器人的 Token
 3. 复制机器人的 Webhook 地址，填入上面的配置中
 
-
-### 方式 D：本地开发（link）
-
-```bash
-openclaw plugins install --link extensions/yzj
-openclaw plugins enable yzj
-openclaw gateway restart
-```
-
 ## 配置
 
 ### 基本配置（单账户）
@@ -198,7 +199,25 @@ channels:
     timeout: 10
 ```
 
+### 应用机器人配置（新增）
+
+如果需要应用机器人长连接和媒体发送能力，再配置 `appId/appSecret`：
+
+```yaml
+channels:
+  yzj:
+    enabled: true
+    appId: "your-app-id"
+    appSecret: "your-app-secret"
+    # 应用机器人使用 websocket
+    inboundMode: "websocket"
+    webhookPath: "/yzj/webhook"
+    timeout: 10
+```
+
 ### 多账户配置
+
+`accounts` 用来同时配置多个机器人账号。原来的 `sendMsgUrl` 多账户方式仍然可用；如果同时接入应用机器人，建议把 `appId/appSecret` 和 `sendMsgUrl` 放到不同账户，避免入站来源和出站回复链路串线。
 
 ```yaml
 channels:
@@ -207,7 +226,7 @@ channels:
     # 默认账户（可选）
     defaultAccount: "bot1"
     # 通道级默认入站模式（可被账户覆盖）
-    inboundMode: "websocket"
+    inboundMode: "webhook"
     # 全局默认配置（可选）
     webhookPath: "/yzj/webhook"
     timeout: 10
@@ -217,7 +236,7 @@ channels:
         name: "生产环境机器人"
         enabled: true
         sendMsgUrl: "https://www.yunzhijia.com/robot/send"
-        inboundMode: "websocket"
+        inboundMode: "webhook"
         webhookPath: "/yzj/bot1"
         timeout: 10
 
@@ -228,7 +247,19 @@ channels:
         inboundMode: "webhook"
         webhookPath: "/yzj/bot2"
         timeout: 5
+
+      app:
+        name: "应用机器人"
+        enabled: true
+        appId: "your-app-id"
+        appSecret: "your-app-secret"
+        inboundMode: "websocket"
+        timeout: 10
 ```
+
+兼容说明：如果历史配置把通道顶层的 `appId/appSecret` 和 `sendMsgUrl` 同时填了，插件会在运行时把它们视为两个账号：`app` 和 `personal`。新配置建议显式写到 `accounts`，更容易看日志和排查问题。
+
+显式配置 `accounts` 后，插件只会启动这些真实账号，不会再额外启动 `default` 虚账号。账户只继承 `webhookPath`、`timeout`、`inboundMode` 等共享运行配置，不继承顶层的 `appId/appSecret/sendMsgUrl/secret` 身份字段。这样从 `personal` 账号收到的消息只会用 `sendMsgUrl` 回复，从 `app` 账号收到的消息只会用应用机器人接口回复。
 
 ### 网络绑定配置
 
@@ -249,14 +280,18 @@ gateway:
 |--------|------|------|--------|------|
 | `enabled` | boolean | 否 | - | 是否启用该通道 |
 | `name` | string | 否 | - | 通道名称 |
-| `sendMsgUrl` | string | 是* | - | 发送消息的 API URL |
+| `appId` | string | 应用机器人必填 | - | 云之家应用 appId |
+| `appSecret` | string | 应用机器人必填 | - | 云之家应用密钥 |
+| `sendMsgUrl` | string | 个人机器人必填 | - | 机器人发送消息接口地址 |
 | `inboundMode` | string | 否 | `webhook` | 入站模式：`webhook` 或 `websocket` |
 | `webhookPath` | string | 否 | `/yzj/webhook` | Webhook 接收路径 |
 | `timeout` | number | 否 | `10` | 请求超时时间（秒） |
 | `defaultAccount` | string | 否 | - | 默认账户 ID |
 | `accounts` | object | 否 | - | 多账户配置对象 |
 
-*注：使用 `accounts` 配置时，`sendMsgUrl` 在各账户中配置，通道级别不需要。
+*注：`appId/appSecret` 对应应用机器人；`sendMsgUrl` 对应个人机器人。两者如果代表不同机器人，应放在不同 `accounts` 里。
+
+媒体能力说明：只有应用机器人账号能上传并发送文件、图片和 mp4 视频。个人机器人 `sendMsgUrl` 账号只能发送文本；如果用户要求发送媒体，插件会回复：`当前个人机器人只支持发送文本，暂不支持上传图片、文件或视频。`
 
 ### 账户级别配置（accounts）
 
@@ -264,7 +299,9 @@ gateway:
 |--------|------|------|--------|------|
 | `name` | string | 否 | - | 账户名称 |
 | `enabled` | boolean | 否 | - | 是否启用该账户 |
-| `sendMsgUrl` | string | **是** | - | 发送消息的 API URL |
+| `appId` | string | 应用机器人必填 | - | 云之家应用 appId |
+| `appSecret` | string | 应用机器人必填 | - | 云之家应用密钥 |
+| `sendMsgUrl` | string | 个人机器人必填 | - | 机器人发送消息接口地址 |
 | `inboundMode` | string | 否 | 继承通道级配置 | 入站模式：`webhook` 或 `websocket` |
 | `webhookPath` | string | 否 | - | Webhook 接收路径（继承通道级别配置） |
 | `timeout` | number | 否 | - | 请求超时时间（秒，继承通道级别配置） |
@@ -272,24 +309,18 @@ gateway:
 
 注：配置 `secret` 后会自动启用签名验证，不配置则不进行签名验证。
 
+注：使用 `accounts` 多账户时，`appId/appSecret/sendMsgUrl/secret` 是账户身份字段，必须写在对应账号下面。顶层同名字段只用于旧单账号配置或历史兼容，不会注入到显式账号。
+
 ## WebSocket 模式
 
 当 `inboundMode: websocket` 时：
 
 - 插件仍然使用 `sendMsgUrl` 发送回复
-- 插件会从 `sendMsgUrl` 中提取 `yzjtoken` 和 host，自动推导 WebSocket 地址
+- 插件会从 `sendMsgUrl` 中提取机器人 token 和 host，自动推导 WebSocket 地址
 - `webhookPath` 仍然保留，作为并行兜底入口
 - 两个入口若收到相同 `msgId`，插件只处理一次
 
-示例：
-
-```text
-sendMsgUrl:
-https://dev.kdweibo.cn/gateway/robot/webhook/send?yzjtype=12&yzjtoken=abc
-
-推导得到:
-wss://dev.kdweibo.cn/xuntong/websocket?yzjtoken=abc
-```
+新增说明：应用机器人模式使用 `appId/appSecret` 建立长连接，可发送文本、图片、文件和 mp4 视频。也就是说，原来的 `sendMsgUrl` 配置方式仍然可用；应用机器人是在此基础上的新增能力。
 
 ## 签名验证
 
@@ -439,6 +470,27 @@ OpenClaw 通过云之家 API 发送消息：
 }
 ```
 
+### 应用机器人发送消息（新增）
+
+应用机器人模式使用 `msgType`，并可附带回复参数、文件、图片、视频等媒体参数。插件会根据消息类型自动组装发送 body。
+
+```typescript
+{
+  "msgType": 2,
+  "toOpenId": "user_openid_123",
+  "content": "这是一条回复消息",
+  "param": {
+    "replyOpenId": "user_openid_123",
+    "replyMsgId": "msg_456",
+    "replyRootMsgId": "msg_456",
+    "replySummary": "用户原消息摘要",
+    "replyPersonName": "张三",
+    "replyTitle": "",
+    "notifyTo": ["user_openid_123"]
+  }
+}
+```
+
 ### 响应格式
 
 ```typescript
@@ -465,6 +517,7 @@ openclaw onboard yzj
 2. 设置 Webhook URL
 3. 获取发送消息的 URL
 4. 配置 OpenClaw 通道
+5. 如使用应用机器人，再补充 `appId/appSecret`
 
 ## 云之家后台配置
 
@@ -517,7 +570,29 @@ channels:
     timeout: 10
 ```
 
-### 4. 配置注意事项
+### 4. 配置应用机器人凭证
+
+如果需要应用机器人长连接和媒体发送能力，再补充 `appId` 和 `appSecret`。不使用应用机器人时，可以只配置上一步的 `sendMsgUrl`。
+
+1. 在云之家开放平台准备应用 `appId` 和 `appSecret`
+2. 确认应用已开通机器人 WebSocket 和发送消息相关权限
+3. 在 OpenClaw YZJ Robot 配置中填写 `appId`、`appSecret`
+4. 插件会自动建立长连接，出站可发送文本和媒体
+
+**配置示例**：
+
+```yaml
+channels:
+  yzj:
+    enabled: true
+    appId: "your-app-id"
+    appSecret: "your-app-secret"
+    inboundMode: "websocket"
+    webhookPath: "/yzj/webhook"
+    timeout: 10
+```
+
+### 5. 配置注意事项
 
 - **Webhook 地址必须可访问**：确保云之家服务器能够访问到你的 OpenClaw Gateway
 - **本地开发需要内网穿透**：使用 ngrok、frp 等工具将本地服务暴露到公网
@@ -531,8 +606,12 @@ channels:
 | 类型 | 值 | 说明 |
 |------|-----|------|
 | 文本 | `2` | 纯文本消息 |
+| 文件 | `8` | 应用机器人支持 |
+| 视频 | `8` | 应用机器人支持，mp4 按文件消息发送 |
+| 富文本 | `23` | 应用机器人支持，可用于图片等内容 |
+| 交互卡片 | `25` | 应用机器人支持 |
 
-更多消息类型支持开发中...
+说明：个人机器人 `sendMsgUrl` 模式只支持文本；文件、图片、mp4 视频需要应用机器人模式。
 
 ## 核心功能实现
 
@@ -540,7 +619,7 @@ channels:
 
 支持灵活的多账户配置：
 
-- **单账户模式**：直接在通道级别配置 `sendMsgUrl`
+- **单账户模式**：直接在通道级别配置 `sendMsgUrl`；需要应用机器人能力时再配置 `appId/appSecret`
 - **多账户模式**：通过 `accounts` 对象配置多个机器人
 - **配置合并**：账户配置继承全局默认配置
 - **账户解析**：自动解析默认账户和指定账户
@@ -612,11 +691,11 @@ channels:
 - ✅ 私聊消息（DM）
 - ✅ 群聊消息
 - ✅ 文本消息发送
+- ✅ 媒体消息发送（文件、图片、mp4 视频；应用模式）
 - ✅ 主动消息推送（通过 OpenID 指定接收者）
 - ✅ 多账户管理
 
 **不支持的功能：**
-- ❌ 媒体消息（图片、文件等）
 - ❌ 表情符号
 - ❌ 线程回复
 - ❌ 投票功能
@@ -664,7 +743,7 @@ channels:
 
 **解决方法**：
 
-1. 检查 `sendMsgUrl` 是否配置：
+1. 个人机器人先检查 `sendMsgUrl` 是否配置：
    ```bash
    openclaw config get channels.yzj.sendMsgUrl
    ```
@@ -676,9 +755,16 @@ channels:
      -d '{"msgtype":2,"content":"测试"}'
    ```
 
-3. 检查网络连接和防火墙设置
+3. 应用机器人再检查 `appId/appSecret` 是否配置：
+   ```bash
+   openclaw config get channels.yzj.appId
+   ```
 
-4. 查看错误日志：
+4. 如果应用机器人发送媒体失败，确认应用有发送消息、上传文件和 WebSocket 相关权限。
+
+5. 检查网络连接和防火墙设置。
+
+6. 查看错误日志：
    ```bash
    openclaw logs --follow | grep yzj
    ```
@@ -709,14 +795,18 @@ channels:
 ```
 yzj/
 ├── src/
-│   ├── types.ts          # 类型定义（119 行）- 消息格式、配置结构、接口定义
-│   ├── config-schema.ts  # JSON Schema 配置验证（54 行）- 配置规则和默认值
-│   ├── compat.ts         # OpenClaw/ClawDBot 兼容层（44 行）- 双平台动态导入
-│   ├── runtime.ts        # 运行时状态管理（27 行）- 插件生命周期管理
-│   ├── accounts.ts       # 账户配置解析（102 行）- 多账户配置管理
-│   ├── onboarding.ts     # 配置向导（194 行）- 交互式配置引导
-│   ├── monitor.ts        # Webhook 处理器（315 行）- 消息接收和发送
-│   └── channel.ts        # 通道插件实现（272 行）- 核心 Channel 接口
+│   ├── types.ts          # 类型定义：消息格式、配置结构、接口定义
+│   ├── config-schema.ts  # JSON Schema 配置验证
+│   ├── compat.ts         # OpenClaw SDK 兼容层
+│   ├── accounts.ts       # 账户配置解析和 app/personal 拆分
+│   ├── auth-token.ts     # 应用凭证获取与缓存
+│   ├── app-message.ts    # 应用机器人 message/send 出站
+│   ├── media-message.ts  # 文件上传与图片/文件/mp4 发送
+│   ├── inbound-dispatcher.ts # 入站消息分发、去重和出站队列
+│   ├── websocket-client.ts   # WebSocket 长连接、ack、pong、重连
+│   ├── onboarding.ts     # 配置向导
+│   ├── monitor.ts        # Webhook 处理器
+│   └── channel.ts        # 通道插件实现
 ├── index.ts              # 插件入口（20 行）- 插件注册和初始化
 ├── package.json          # 包配置（ESM 模块）
 ├── openclaw.plugin.json  # OpenClaw 插件元数据
@@ -731,6 +821,11 @@ index.ts (入口)
   ├── channel.ts (通道插件实现)
   │     ├── accounts.ts (账户管理)
   │     ├── config-schema.ts (配置验证)
+  │     ├── auth-token.ts (应用凭证)
+  │     ├── app-message.ts (应用机器人出站)
+  │     ├── media-message.ts (媒体上传和发送)
+  │     ├── websocket-client.ts (长连接入站)
+  │     ├── inbound-dispatcher.ts (入站分发)
   │     ├── onboarding.ts (配置向导)
   │     └── monitor.ts (Webhook 处理)
   │           └── types.ts (类型定义)
@@ -748,23 +843,10 @@ index.ts (入口)
 - **平台支持**: OpenClaw / ClawDBot（双平台兼容）
 - **依赖管理**: npm
 
-### 核心依赖
-
-```json
-{
-  "dependencies": {},
-  "peerDependencies": {
-    "openclaw": "*",
-    "clawdbot": "*"
-  }
-}
-```
-
 ### 版本信息
 
-- **当前版本**: 2026.3.8
-- **包名**: @openclaw/yzj
-- **发布日期**: 2026-03-06
+- **当前版本**: 2026.4.9
+- **包名**: yzj
 
 ## 开发
 
@@ -827,9 +909,16 @@ interface YZJIncomingMessage {
   content: string;             // 消息内容
 }
 
-// 发送消息接口（API）
-interface YZJOutgoingMessage {
+// 个人机器人发送消息接口（sendMsgUrl）
+interface YZJSendMsgUrlMessage {
   msgtype: MessageType;        // 消息类型
+  content: string;             // 消息内容
+}
+
+// 应用机器人发送消息接口
+interface YZJAppMessage {
+  msgType: MessageType;        // 消息类型
+  toOpenId: string;            // 接收者 OpenID
   content: string;             // 消息内容
 }
 ```
@@ -844,18 +933,15 @@ interface YZJOutgoingMessage {
 
 #### 平台兼容（src/compat.ts）
 
-动态导入策略：
-1. 优先尝试导入 `openclaw/sdk`
-2. 回退到 `clawdbot/sdk`
-3. 重新导出通用类型和工具函数
-
-确保插件在两个平台都能无缝运行。
+`src/compat.ts` 统一导入 `openclaw/plugin-sdk` 类型，并在本地保留账户 ID 规范化、空配置 schema、setup wizard 兼容类型等运行时辅助逻辑，避免不同 OpenClaw 版本的 SDK 子路径变化影响插件加载。
 
 ### 限制说明
 
-- 需要有效的云之家机器人 `sendMsgUrl`
+- 个人机器人模式需要有效的 `sendMsgUrl`
+- 应用机器人模式需要有效的 `appId/appSecret`
 - Webhook 需要可被云之家访问（公网或内网穿透）
-- 目前仅支持文本消息
+- 文件、图片和 mp4 视频发送依赖应用机器人能力
+- 个人机器人 `sendMsgUrl` 模式只支持文本，不支持上传文件、图片或视频
 - 不支持流式响应（云之家 API 限制）
 - 消息大小限制：1MB
 - 主动发消息需要获取用户的 OpenID
@@ -874,8 +960,8 @@ interface YZJOutgoingMessage {
 ## 项目元数据
 
 **包信息**
-- **包名**: @openclaw/yzj
-- **版本**: 2026.3.8
+- **包名**: yzj
+- **版本**: 2026.4.9
 - **描述**: OpenClaw YZJ (Yunzhijia) intelligent bot channel plugin
 - **模块类型**: ESM
 - **插件 ID**: yzj
@@ -888,9 +974,8 @@ interface YZJOutgoingMessage {
 - 支持的扩展: `./index.ts`
 
 **统计信息**
-- 总代码行数: ~1,247 行（不含配置和文档）
-- 核心模块数: 8 个
-- 支持的消息类型: 1 种（文本）
+- 核心模块数: 20+ 个
+- 支持的出站消息类型: 文本、文件、图片、mp4 视频、交互卡片 payload
 - 平台兼容性: OpenClaw + ClawDBot
 
 ## 许可证

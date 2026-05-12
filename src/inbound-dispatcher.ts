@@ -1,13 +1,26 @@
-import type { OpenclawConfig, PluginRuntime } from "./compat.js";
+import type { OpenclawConfig, PluginRuntime } from "./compat.ts";
+import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime";
 
-import { getYZJRuntime } from "./runtime.js";
-import { InboundDedupeStore } from "./dedupe-store.js";
+import { getYZJRuntime } from "./runtime.ts";
+import { InboundDedupeStore } from "./dedupe-store.ts";
+import { sendYZJAppTextMessage } from "./app-message.ts";
+import { YZJ_MEDIA_UNSUPPORTED_MESSAGE } from "./media-unsupported.ts";
+import { mergeYZJMediaLocalRoots } from "./media-roots.ts";
+import { uploadAndSendYZJAppMedia } from "./media-message.ts";
+import {
+  buildYZJOutboundQueueKey,
+  clearYZJOutboundQueues,
+  clearYZJOutboundTurnTexts,
+  consumeYZJOutboundDuplicateText,
+  enqueueYZJOutbound,
+} from "./outbound-queue.ts";
 import type {
   ResolvedYZJAccount,
   YZJIncomingMessage,
   YZJInboundStatusPatch,
   YZJLogger,
-} from "./types.js";
+} from "./types.ts";
+import { formatYZJConversationTarget } from "./targets.ts";
 
 export type YZJInboundSource = "webhook" | "websocket";
 
@@ -21,9 +34,38 @@ export type YZJInboundTarget = {
 
 const dedupeStore = new InboundDedupeStore();
 
+type YZJInboundConversation = {
+  chatId: string;
+  chatType: "direct" | "group";
+  groupIdForSend: string;
+  toOpenIdForSend: string;
+  notifyOpenid: string;
+  routePeer: { kind: "direct" | "group"; id: string };
+};
+
+type YZJBlockReplyPayload = {
+  text?: string;
+  mediaUrl?: string;
+  mediaUrls?: string[];
+};
+
+type YZJToolStartPayload = {
+  name?: string;
+  phase?: string;
+};
+
 function logInfo(logger: YZJLogger, message: string): void {
   logger.info?.(message);
   if (!logger.info) logger.log?.(message);
+}
+
+function updateInboundStatus(target: YZJInboundTarget, patch: YZJInboundStatusPatch): void {
+  try {
+    target.statusSink?.(patch);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    target.runtime.warn?.(`[${target.account.accountId}] yzj status update failed: ${errorMsg}`);
+  }
 }
 
 function resolveCore(target: YZJInboundTarget): PluginRuntime {
@@ -32,6 +74,49 @@ function resolveCore(target: YZJInboundTarget): PluginRuntime {
 
 export function clearInboundState(accountId: string): void {
   dedupeStore.clearAccount(accountId);
+  clearYZJOutboundQueues();
+}
+
+function isPrivateRobotGroupId(groupId: string): boolean {
+  return groupId.toUpperCase().startsWith("BOT-");
+}
+
+function isDirectConversationByGroupType(groupType: number | undefined, groupId: string): boolean {
+  if (groupType === 1 || groupType === 3) return true;
+  if (groupType === 2 || groupType === 4) return false;
+  return isPrivateRobotGroupId(groupId);
+}
+
+export function resolveYZJInboundConversation(msg: {
+  groupType?: number;
+  groupId?: string;
+  operatorOpenid?: string;
+  robotId?: string;
+}): YZJInboundConversation {
+  const operatorOpenid = msg.operatorOpenid?.trim() || "unknown";
+  const robotId = msg.robotId?.trim() || "unknown";
+  const rawGroupId = msg.groupId?.trim() || "";
+  const isDirect = isDirectConversationByGroupType(msg.groupType, rawGroupId);
+  if (isDirect) {
+    return {
+      chatId: operatorOpenid,
+      chatType: "direct",
+      groupIdForSend: "",
+      toOpenIdForSend: operatorOpenid,
+      notifyOpenid: "",
+      routePeer: { kind: "direct", id: operatorOpenid },
+    };
+  }
+
+  const chatId = rawGroupId || robotId;
+  return {
+    chatId,
+    chatType: "group",
+    groupIdForSend: rawGroupId,
+    toOpenIdForSend: "",
+    notifyOpenid: operatorOpenid,
+    routePeer: { kind: "group", id: chatId },
+  };
 }
 
 export async function dispatchInboundMessage(
@@ -45,7 +130,7 @@ export async function dispatchInboundMessage(
     return { duplicate: true };
   }
 
-  target.statusSink?.({ lastInboundAt: Date.now() });
+  updateInboundStatus(target, { lastInboundAt: Date.now() });
   await startAgentForInbound(target, msg, source);
   return { duplicate: false };
 }
@@ -53,14 +138,41 @@ export async function dispatchInboundMessage(
 async function sendYZJMessage(
   target: YZJInboundTarget,
   operatorOpenid: string,
+  groupId: string,
   text: string,
-  replyData: Record<string, unknown> | undefined,
+  replyData: {
+    replyOpenId?: string;
+    replyMsgId: string;
+    replyRootMsgId: string;
+    replySummary: string;
+    replyPersonName: string;
+    replyTitle?: string;
+    notifyTo: string[];
+  } | undefined,
 ): Promise<void> {
   const { account } = target;
+
+  if (account.appId && account.appSecret) {
+    const safeReplyData = replyData?.notifyTo.length ? replyData : undefined;
+    const result = await sendYZJAppTextMessage(account, {
+      groupId: groupId || undefined,
+      toOpenId: groupId ? undefined : operatorOpenid,
+      text,
+      reply: safeReplyData,
+    }, { logger: target.runtime });
+    if (result.ok) {
+      updateInboundStatus(target, { lastOutboundAt: Date.now() });
+      return;
+    }
+
+    target.runtime.error?.(`[yzj] message/send 发送消息失败：${result.error?.message ?? "unknown error"}`);
+    return;
+  }
+
   const sendMsgUrl = account.sendMsgUrl;
 
   if (!sendMsgUrl) {
-    target.runtime.error?.(`[yzj] sendMsgUrl 未配置，无法发送消息`);
+    target.runtime.error?.(`[yzj] appId/appSecret 或 sendMsgUrl 未配置，无法发送消息`);
     return;
   }
 
@@ -68,20 +180,7 @@ async function sendYZJMessage(
     const payload: Record<string, unknown> = {
       msgtype: 2,
       content: text,
-      notifyParams: [] as { type: string; values: string[] }[],
     };
-
-    if (operatorOpenid) {
-      (payload.notifyParams as { type: string; values: string[] }[]).push({
-        type: "openIds",
-        values: [operatorOpenid],
-      });
-    }
-
-    if (replyData) {
-      payload.param = replyData;
-      payload.paramType = 3;
-    }
 
     const response = await fetch(sendMsgUrl, {
       method: "POST",
@@ -95,8 +194,7 @@ async function sendYZJMessage(
       const errorText = await response.text();
       target.runtime.error?.(`[yzj] 发送消息失败：HTTP ${response.status} - ${errorText}`);
     } else {
-      logInfo(target.runtime, `[yzj] 消息已发送：${text.slice(0, 50)}${text.length > 50 ? "..." : ""}`);
-      target.statusSink?.({ lastOutboundAt: Date.now() });
+      updateInboundStatus(target, { lastOutboundAt: Date.now() });
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -104,10 +202,49 @@ async function sendYZJMessage(
   }
 }
 
+async function sendYZJMedia(
+  target: YZJInboundTarget,
+  operatorOpenid: string,
+  groupId: string,
+  text: string,
+  mediaUrl: string,
+  mediaLocalRoots: readonly string[],
+  replyData: {
+    replyOpenId?: string;
+    replyMsgId: string;
+    replyRootMsgId: string;
+    replySummary: string;
+    replyPersonName: string;
+    replyTitle?: string;
+    notifyTo: string[];
+  } | undefined,
+): Promise<void> {
+  const { account } = target;
+  if (!account.appId || !account.appSecret) {
+    await sendYZJMessage(target, operatorOpenid, groupId, YZJ_MEDIA_UNSUPPORTED_MESSAGE, undefined);
+    return;
+  }
+
+  const result = await uploadAndSendYZJAppMedia(account, {
+    groupId: groupId || undefined,
+    toOpenId: groupId ? undefined : operatorOpenid,
+    text,
+    mediaUrl,
+    mediaLocalRoots,
+    reply: replyData,
+  }, { logger: target.runtime });
+  if (result.ok) {
+    updateInboundStatus(target, { lastOutboundAt: Date.now() });
+    return;
+  }
+
+  target.runtime.error?.(`[yzj] message/send 媒体发送失败：${result.error?.message ?? "unknown error"}`);
+}
+
 async function startAgentForInbound(
   target: YZJInboundTarget,
   msg: YZJIncomingMessage,
-  source: YZJInboundSource,
+  _source: YZJInboundSource,
 ): Promise<void> {
   const { account, config } = target;
   const core = resolveCore(target);
@@ -116,20 +253,26 @@ async function startAgentForInbound(
   const operatorName = msg.operatorName?.trim() || "未知用户";
   const content = msg.content?.trim() || "";
   const robotId = msg.robotId?.trim() || "unknown";
-  const chatId = robotId;
   const msgId = msg.msgId?.trim() || "";
   const groupType = msg.groupType || 0;
-
-  const notifyOpenid = groupType===3 ? "" : operatorOpenid;
+  const conversation = resolveYZJInboundConversation({
+    groupType,
+    groupId: msg.groupId,
+    operatorOpenid,
+    robotId,
+  });
+  const conversationTarget = formatYZJConversationTarget(conversation);
 
   let replyData = undefined;
   if (msgId.length > 0) {
     replyData = {
+      replyOpenId: operatorOpenid,
       replyMsgId: msgId,
-      replyTitle: "",
-      isReference: true,
+      replyRootMsgId: msgId,
       replySummary: content,
       replyPersonName: operatorName,
+      replyTitle: "",
+      notifyTo: [operatorOpenid],
     };
   }
 
@@ -137,13 +280,8 @@ async function startAgentForInbound(
     cfg: config,
     channel: "yzj",
     accountId: account.accountId,
-    peer: { kind: "group", id: chatId },
+    peer: conversation.routePeer,
   });
-
-  logInfo(
-    target.runtime,
-    `[yzj] starting ${source} agent processing (agentId=${route.agentId}, peerId=${chatId}) operatorOpenid=${operatorOpenid} groupType=${groupType} content="${content.slice(0, 50)}${content.length > 50 ? "..." : ""}"`,
-  );
 
   const storePath = core.channel.session.resolveStorePath(config.session?.store, {
     agentId: route.agentId,
@@ -168,18 +306,20 @@ async function startAgentForInbound(
     RawBody: content,
     CommandBody: content,
     From: `yzj:${operatorOpenid}`,
-    To: `yzj:${robotId}`,
+    To: conversationTarget,
     SessionKey: route.sessionKey,
-    AccountId: route.accountId,
-    ChatType: "group",
+    AccountId: account.accountId,
+    ChatType: conversation.chatType,
     ConversationLabel: `user:${operatorOpenid}`,
     SenderName: operatorName,
     SenderId: operatorOpenid,
     Provider: "yzj",
     Surface: "yzj",
+    CurrentMessageId: msg.msgId,
     MessageSid: msg.msgId,
     OriginatingChannel: "yzj",
-    OriginatingTo: `yzj:${robotId}`,
+    OriginatingTo: conversationTarget,
+    YZJReply: replyData,
   });
 
   await core.channel.session.recordInboundSession({
@@ -196,33 +336,119 @@ async function startAgentForInbound(
     channel: "yzj",
     accountId: account.accountId,
   });
+  const mediaLocalRoots = mergeYZJMediaLocalRoots(account.mediaLocalRoots, getAgentScopedMediaLocalRoots(config, route.agentId));
+  const outboundQueueKey = buildYZJOutboundQueueKey({
+    accountId: account.accountId,
+    groupId: conversation.groupIdForSend,
+    toOpenId: conversation.toOpenIdForSend,
+  });
+  const turnId = msgId || msg.msgId;
 
   let messageBuffer: string[] = [];
+  let partialTextBuffer = "";
+  const outboundTasks: Promise<void>[] = [];
+  const queuedBlockReplyTexts = new Map<string, number>();
+  const sentTextKeys = new Set<string>();
+  const enqueueOutbound = (task: () => Promise<void>): Promise<void> => {
+    const queued = enqueueYZJOutbound(outboundQueueKey, task);
+    outboundTasks.push(queued);
+    return queued;
+  };
+  const normalizeTextKey = (text: string): string => text.replace(/\s+/g, " ").trim();
+  const rememberSentText = (text: string): void => {
+    const textKey = normalizeTextKey(text);
+    if (textKey) sentTextKeys.add(textKey);
+  };
+  const hasSentText = (text: string): boolean => sentTextKeys.has(normalizeTextKey(text));
+  const markQueuedBlockText = (text: string): void => {
+    queuedBlockReplyTexts.set(text, (queuedBlockReplyTexts.get(text) ?? 0) + 1);
+  };
+  const consumeQueuedBlockText = (text: string): boolean => {
+    const count = queuedBlockReplyTexts.get(text) ?? 0;
+    if (count <= 0) return false;
+    if (count === 1) queuedBlockReplyTexts.delete(text);
+    else queuedBlockReplyTexts.set(text, count - 1);
+    return true;
+  };
+
+  const flushBufferedText = async (): Promise<void> => {
+    if (messageBuffer.length === 0) return;
+    const fullMessage = messageBuffer.join("");
+    messageBuffer = [];
+    partialTextBuffer = "";
+    if (hasSentText(fullMessage)) return;
+    if (consumeYZJOutboundDuplicateText({ queueKey: outboundQueueKey, turnId, text: fullMessage })) return;
+    rememberSentText(fullMessage);
+    await enqueueOutbound(() => sendYZJMessage(target, conversation.toOpenIdForSend, conversation.groupIdForSend, fullMessage, replyData));
+  };
+  const flushPartialText = async (): Promise<void> => {
+    if (!partialTextBuffer) return;
+    messageBuffer = [partialTextBuffer];
+    await flushBufferedText();
+  };
+
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
     cfg: config,
-    dispatcherOptions: {
-      deliver: (payload: { text?: string }) => {
+    replyOptions: {
+      onPartialReply: async (payload: YZJBlockReplyPayload) => {
+        const mediaUrls = payload.mediaUrls?.length ? payload.mediaUrls : payload.mediaUrl ? [payload.mediaUrl] : [];
+        if (mediaUrls.length > 0) return;
         const text = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
+        if (!text || hasSentText(text)) return;
+        partialTextBuffer = text;
+      },
+      onToolStart: async (payload: YZJToolStartPayload) => {
+        if (payload.phase && payload.phase !== "start") return;
+        await flushPartialText();
+      },
+      onBlockReplyQueued: async (payload: YZJBlockReplyPayload) => {
+        const mediaUrls = payload.mediaUrls?.length ? payload.mediaUrls : payload.mediaUrl ? [payload.mediaUrl] : [];
+        if (mediaUrls.length > 0) return;
+        const text = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
+        if (!text) return;
+        markQueuedBlockText(text);
+        await flushBufferedText();
+        if (hasSentText(text)) return;
+        if (consumeYZJOutboundDuplicateText({ queueKey: outboundQueueKey, turnId, text })) return;
+        rememberSentText(text);
+        await enqueueOutbound(() => sendYZJMessage(target, conversation.toOpenIdForSend, conversation.groupIdForSend, text, replyData));
+      },
+    } as unknown as Record<string, unknown>,
+    dispatcherOptions: {
+      deliver: async (payload: YZJBlockReplyPayload, info?: { kind?: string }) => {
+        const text = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
+        if (info?.kind === "block" && consumeQueuedBlockText(text)) return;
+        const mediaUrls = payload.mediaUrls?.length ? payload.mediaUrls : payload.mediaUrl ? [payload.mediaUrl] : [];
+        if (mediaUrls.length > 0) {
+          await flushPartialText();
+          if (messageBuffer.length > 0) {
+            await flushBufferedText();
+          }
+          for (const mediaUrl of mediaUrls) {
+            if (mediaUrl?.trim()) {
+              await enqueueOutbound(() => sendYZJMedia(target, conversation.toOpenIdForSend, conversation.groupIdForSend, text, mediaUrl.trim(), mediaLocalRoots, replyData));
+            }
+          }
+          return;
+        }
+
         if (text) messageBuffer.push(text);
         const length = messageBuffer.reduce((sum, item) => sum + item.length, 0);
-        if (length > 20) {
-          const fullMessage = messageBuffer.join("");
-          messageBuffer = [];
-          void sendYZJMessage(target, notifyOpenid, fullMessage, replyData);
+        if (length > 20 || info?.kind === "block") {
+          await flushBufferedText();
         }
       },
       onError: (err: unknown, info: { kind?: string }) => {
         messageBuffer = [];
         const errorMsg = `抱歉,处理您的消息时遇到问题: ${err instanceof Error ? err.message : String(err)}`;
         target.runtime.error?.(`[${account.accountId}] yzj ${info.kind ?? "reply"} reply failed: ${String(err)}`);
-        void sendYZJMessage(target, notifyOpenid, errorMsg, replyData);
+        enqueueOutbound(() => sendYZJMessage(target, conversation.toOpenIdForSend, conversation.groupIdForSend, errorMsg, replyData));
       },
     },
   });
 
-  if (messageBuffer.length > 0) {
-    const fullMessage = messageBuffer.join("");
-    await sendYZJMessage(target, notifyOpenid, fullMessage, replyData);
-  }
+  await flushBufferedText();
+  await Promise.all(outboundTasks);
+  clearYZJOutboundTurnTexts({ queueKey: outboundQueueKey, turnId });
 }

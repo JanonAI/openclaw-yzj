@@ -8,22 +8,30 @@ import type {
   ChannelAccountSnapshot,
   ChannelPlugin,
   OpenclawConfig,
-} from "./compat.js";
+} from "./compat.ts";
 import {
   DEFAULT_ACCOUNT_ID,
   deleteAccountFromConfigSection,
   formatPairingApproveHint,
   setAccountEnabledInConfigSection,
-} from "./compat.js";
+} from "./compat.ts";
 
-import { listYZJAccountIds, resolveDefaultYZJAccountId, resolveYZJAccount } from "./accounts.js";
-import { yzjConfigSchema } from "./config-schema.js";
-import type { ResolvedYZJAccount } from "./types.js";
-import { clearInboundState } from "./inbound-dispatcher.js";
-import { registerYZJWebhookTarget } from "./monitor.js";
-import { yzjOnboardingAdapter } from "./onboarding.js";
-import { deriveYZJWebSocketUrl } from "./ws-url.js";
-import { YZJWebSocketClient } from "./websocket-client.js";
+import { listYZJAccountIds, resolveDefaultYZJAccountId, resolveYZJAccount } from "./accounts.ts";
+import { sendYZJAppTextMessage } from "./app-message.ts";
+import { uploadAndSendYZJAppMedia } from "./media-message.ts";
+import { getYZJAccessTokenProvider } from "./auth-token.ts";
+import { yzjConfigSchema } from "./config-schema.ts";
+import type { ResolvedYZJAccount } from "./types.ts";
+import { clearInboundState } from "./inbound-dispatcher.ts";
+import { registerYZJWebhookTarget } from "./monitor.ts";
+import { yzjOnboardingAdapter } from "./onboarding.ts";
+import { deriveYZJAccessTokenWebSocketUrl, deriveYZJWebSocketUrl } from "./ws-url.ts";
+import { YZJWebSocketClient } from "./websocket-client.ts";
+import { yzjMessageActions } from "./actions.ts";
+import { mergeYZJMediaLocalRoots } from "./media-roots.ts";
+import { YZJ_MEDIA_UNSUPPORTED_MESSAGE } from "./media-unsupported.ts";
+import { normalizeYZJMessagingTarget, resolveYZJSendTarget } from "./targets.ts";
+import { buildYZJOutboundQueueKey, enqueueYZJOutbound } from "./outbound-queue.ts";
 
 const meta = {
   id: "yzj",
@@ -37,16 +45,54 @@ const meta = {
   quickstartAllowFrom: true,
 };
 
+async function sendYZJLegacyWebhookText(params: {
+  sendMsgUrl: string;
+  to?: string;
+  text: string;
+}): Promise<void> {
+  const payload: {
+    msgtype: number;
+    content: string;
+  } = {
+    msgtype: 2,
+    content: params.text,
+  };
+
+  const response = await fetch(params.sendMsgUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`sendMsgUrl failed: HTTP ${response.status}`);
+  }
+}
+
+function resolveOutboundDestination(to: string): { toOpenId?: string; groupId?: string } {
+  return resolveYZJSendTarget(to);
+}
+
+function buildOutboundReplyForDestination(destination: { toOpenId?: string; groupId?: string }, replyToId?: string | null) {
+  const replyMsgId = replyToId?.trim();
+  if (!replyMsgId) return undefined;
+  const toOpenId = destination.toOpenId?.trim();
+  return {
+    ...(toOpenId ? { replyOpenId: toOpenId } : {}),
+    replyMsgId,
+    replyRootMsgId: replyMsgId,
+    replySummary: "",
+    replyPersonName: "",
+    replyTitle: "",
+    notifyTo: toOpenId ? [toOpenId] : [],
+  };
+}
+
 /**
  * 规范化 YZJ 消息目标
  * YZJ 使用 OpenID 作为目标标识符
  */
-function normalizeYZJMessagingTarget(raw: string): string | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  return trimmed.replace(/^(yzj|yunzhijia):/i, "").trim() || undefined;
-}
-
 /**
  * 等待 abort 信号触发，保持 startAccount 的 Promise 处于 pending 状态。
  */
@@ -66,13 +112,22 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
   setupWizard: yzjOnboardingAdapter,
   capabilities: {
     chatTypes: ["direct", "group"],
-    media: false,
+    media: true,
     reactions: false,
     threads: false,
     polls: false,
     nativeCommands: false,
     blockStreaming: true,
   },
+  agentPrompt: {
+    messageToolHints: () => [
+      "- YZJ supports media send through `message` action=send. Use `media`, `mediaUrl`, `path`, `filePath`, or `url` for a local file path or remote media URL; the plugin uploads it with /gateway/docrest/doc/file/uploadfileOpen and sends it with /gateway/xtinterface/message/send.",
+      "- When the user asks you to send a local image/file/video path back to them, call `message` with action=send and the path/media field. Do not answer that the file was read or that a preview may be visible.",
+      "- When you create a file for the user and they ask you to send it, call `message` with action=send and `path`/`filePath` pointing to the generated file. Do not only summarize the file path or contents.",
+      "- In a YZJ inbound turn, omit `to`/`target` to reply to the current conversation. Explicit targets are `user:<openId>` for private chats and `group:<groupId>` for groups.",
+    ],
+  },
+  actions: yzjMessageActions,
   reload: { configPrefixes: ["channels.yzj"] },
   configSchema: yzjConfigSchema,
   config: {
@@ -91,7 +146,7 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
       deleteAccountFromConfigSection({
         cfg: cfg as OpenclawConfig,
         sectionKey: "yzj",
-        clearBaseFields: ["name", "sendMsgUrl", "webhookPath", "timeout", "inboundMode"],
+        clearBaseFields: ["name", "endpoint", "appId", "appSecret", "sendMsgUrl", "webhookPath", "timeout", "inboundMode"],
         accountId,
       }),
     isConfigured: (account) => account.configured,
@@ -102,8 +157,7 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
       configured: account.configured,
       webhookPath: account.webhookPath ?? "/yzj/webhook",
     }),
-    resolveAllowFrom: ({ cfg, accountId }) => {
-      const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig, accountId });
+    resolveAllowFrom: () => {
       // YZJ 不支持 allowFrom 配置，返回空数组
       return [];
     },
@@ -135,6 +189,17 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
   threading: {
     // YZJ 不支持线程回复
     resolveReplyToMode: () => "off",
+    buildToolContext: ({ context, accountId, hasRepliedRef }) => {
+      const yzjReply = (context as unknown as { YZJReply?: unknown }).YZJReply;
+      return {
+        currentChannelId: normalizeYZJMessagingTarget(context.To ?? "") ?? undefined,
+        currentChannelProvider: "yzj",
+        currentMessageId: context.CurrentMessageId,
+        hasRepliedRef,
+        yzjAccountId: accountId?.trim() || undefined,
+        ...(yzjReply ? { yzjReply } : {}),
+      } as any;
+    },
   },
   messaging: {
     normalizeTarget: normalizeYZJMessagingTarget,
@@ -148,63 +213,190 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
     chunkerMode: "text",
     textChunkLimit: 20480,
     chunker: (text, limit) => {
-      return [text];
+      const size = Math.max(1, Math.floor(limit));
+      const chunks: string[] = [];
+      for (let index = 0; index < text.length; index += size) {
+        chunks.push(text.slice(index, index + size));
+      }
+      return chunks.length > 0 ? chunks : [text];
     },
-    sendText: async ({ cfg, to, text, accountId, replyToId, threadId }) => {
-      const logPrefix = `[yzj][outbound][${accountId || "default"}]`;
+    sendPayload: async ({ cfg, to, payload, mediaLocalRoots, accountId, replyToId }) => {
+      const text = payload.text ?? "";
+      const mediaUrls = payload.mediaUrls?.length ? payload.mediaUrls : payload.mediaUrl ? [payload.mediaUrl] : [];
 
-      // 从账户配置获取 sendMsgUrl
-      const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig, accountId });
-      const sendMsgUrl = account.sendMsgUrl;
-
-      if (!sendMsgUrl) {
-        console.error(`${logPrefix} sendMsgUrl not configured`);
+      if (!text.trim() && mediaUrls.length === 0) {
         return {
           channel: "yzj",
-          ok: false,
+          ok: true,
           messageId: "",
-          error: new Error("sendMsgUrl not configured"),
         };
       }
 
-      const payload = {
-        msgtype: 2, // MessageType.TEXT
-        content: text,
-      };
-
-      if (to) {
-        payload['notifyParams'] = [{
-          type: "openIds",
-          values: [to]
-        }];
-      }
-
-      try {
-        const response = await fetch(sendMsgUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
+      if (mediaUrls.length === 0) {
+        const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig, accountId });
+        const destination = resolveOutboundDestination(to);
+        const queueKey = buildYZJOutboundQueueKey({
+          accountId: account.accountId,
+          groupId: destination.groupId,
+          toOpenId: destination.toOpenId,
         });
 
-        console.info(`${logPrefix} response status: ${response.status} ${response.statusText}`);
-
-        if (response.ok) {
-          return {
-            channel: "yzj",
-            ok: true,
-          };
-        } else {
-          const errorText = `HTTP ${response.status}`;
-          console.error(`${logPrefix} ${errorText}`);
+        if (!account.appId || !account.appSecret) {
+          if (account.sendMsgUrl) {
+            await enqueueYZJOutbound(queueKey, async () => {
+              await sendYZJLegacyWebhookText({
+                sendMsgUrl: account.sendMsgUrl,
+                to: destination.toOpenId,
+                text,
+              });
+            });
+            return {
+              channel: "yzj",
+              ok: true,
+              messageId: "",
+            };
+          }
           return {
             channel: "yzj",
             ok: false,
             messageId: "",
-            error: new Error(errorText),
+            error: new Error("appId/appSecret or sendMsgUrl not configured"),
           };
         }
+        const result = await enqueueYZJOutbound(queueKey, async () =>
+          sendYZJAppTextMessage(account, {
+            toOpenId: destination.toOpenId,
+            groupId: destination.groupId,
+            text,
+            reply: buildOutboundReplyForDestination(destination, replyToId),
+          }));
+        return {
+          channel: "yzj",
+          ok: result.ok,
+          messageId: result.messageId ?? "",
+          ...(result.error ? { error: result.error } : {}),
+        };
+      }
+
+      const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig, accountId });
+      const destination = resolveOutboundDestination(to);
+      const queueKey = buildYZJOutboundQueueKey({
+        accountId: account.accountId,
+        groupId: destination.groupId,
+        toOpenId: destination.toOpenId,
+      });
+      if (!account.appId || !account.appSecret) {
+        if (account.sendMsgUrl) {
+          await enqueueYZJOutbound(queueKey, async () => {
+            await sendYZJLegacyWebhookText({
+              sendMsgUrl: account.sendMsgUrl,
+              to: destination.toOpenId,
+              text: YZJ_MEDIA_UNSUPPORTED_MESSAGE,
+            });
+          });
+          return {
+            channel: "yzj",
+            ok: true,
+            messageId: "",
+            meta: { mediaUnsupported: true },
+          };
+        }
+        return {
+          channel: "yzj",
+          messageId: "",
+          meta: { error: YZJ_MEDIA_UNSUPPORTED_MESSAGE },
+        };
+      }
+
+      let lastMessageId = "";
+      for (const [index, mediaUrlRaw] of mediaUrls.entries()) {
+        const mediaUrl = mediaUrlRaw?.trim();
+        if (!mediaUrl) continue;
+        const result = await enqueueYZJOutbound(queueKey, async () =>
+          uploadAndSendYZJAppMedia(account, {
+            toOpenId: destination.toOpenId,
+            groupId: destination.groupId,
+            text: index === 0 ? text : "",
+            mediaUrl,
+            mediaLocalRoots: mergeYZJMediaLocalRoots(account.mediaLocalRoots, mediaLocalRoots),
+            reply: buildOutboundReplyForDestination(destination, replyToId),
+          }));
+        if (!result.ok) {
+          return {
+            channel: "yzj",
+            ok: false,
+            messageId: lastMessageId,
+            error: result.error ?? new Error("message/send media failed"),
+          };
+        }
+        lastMessageId = result.messageId ?? lastMessageId;
+      }
+
+      return {
+        channel: "yzj",
+        ok: true,
+        messageId: lastMessageId,
+      };
+    },
+    sendText: async ({ cfg, to, text, accountId, replyToId }) => {
+      const logPrefix = `[yzj][outbound][${accountId || "default"}]`;
+
+      const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig, accountId });
+      const destination = resolveOutboundDestination(to);
+      const queueKey = buildYZJOutboundQueueKey({
+        accountId: account.accountId,
+        groupId: destination.groupId,
+        toOpenId: destination.toOpenId,
+      });
+      if (account.appId && account.appSecret) {
+        const result = await enqueueYZJOutbound(queueKey, async () =>
+          sendYZJAppTextMessage(account, {
+            toOpenId: destination.toOpenId,
+            groupId: destination.groupId,
+            text,
+            reply: buildOutboundReplyForDestination(destination, replyToId),
+          }));
+        if (result.ok) {
+          return {
+            channel: "yzj",
+            ok: true,
+            messageId: result.messageId ?? "",
+          };
+        }
+        return {
+          channel: "yzj",
+          ok: false,
+          messageId: "",
+            error: result.error ?? new Error("message/send failed"),
+        };
+      }
+
+      // 兼容旧机器人 webhook 配置。
+      const sendMsgUrl = account.sendMsgUrl;
+
+      if (!sendMsgUrl) {
+        console.error(`${logPrefix} appId/appSecret or sendMsgUrl not configured`);
+        return {
+          channel: "yzj",
+          ok: false,
+          messageId: "",
+          error: new Error("appId/appSecret or sendMsgUrl not configured"),
+        };
+      }
+
+      try {
+        await enqueueYZJOutbound(queueKey, async () => {
+          await sendYZJLegacyWebhookText({
+            sendMsgUrl,
+            to: destination.toOpenId,
+            text,
+          });
+        });
+        return {
+          channel: "yzj",
+          ok: true,
+          messageId: "",
+        };
       } catch (error) {
         console.error(`${logPrefix} send message failed:`, error);
         return {
@@ -215,8 +407,68 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
         };
       }
     },
-    sendMedia: async ({ cfg, to, text, mediaUrl, accountId }) => {
-      throw new Error("YZJ outbound error");
+    sendMedia: async ({ cfg, to, text, mediaUrl, mediaLocalRoots, accountId, replyToId }) => {
+      const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig, accountId });
+      const destination = resolveOutboundDestination(to);
+      const queueKey = buildYZJOutboundQueueKey({
+        accountId: account.accountId,
+        groupId: destination.groupId,
+        toOpenId: destination.toOpenId,
+      });
+      if (!account.appId || !account.appSecret) {
+        if (account.sendMsgUrl) {
+          await enqueueYZJOutbound(queueKey, async () => {
+            await sendYZJLegacyWebhookText({
+              sendMsgUrl: account.sendMsgUrl,
+              to: destination.toOpenId,
+              text: YZJ_MEDIA_UNSUPPORTED_MESSAGE,
+            });
+          });
+          return {
+            channel: "yzj",
+            ok: true,
+            messageId: "",
+            meta: { mediaUnsupported: true },
+          };
+        }
+        return {
+          channel: "yzj",
+          messageId: "",
+          meta: { error: YZJ_MEDIA_UNSUPPORTED_MESSAGE },
+        };
+      }
+
+      try {
+        const result = await enqueueYZJOutbound(queueKey, async () =>
+          uploadAndSendYZJAppMedia(account, {
+            toOpenId: destination.toOpenId,
+            groupId: destination.groupId,
+            text,
+            mediaUrl,
+            mediaLocalRoots: mergeYZJMediaLocalRoots(account.mediaLocalRoots, mediaLocalRoots),
+            reply: buildOutboundReplyForDestination(destination, replyToId),
+          }));
+        if (result.ok) {
+          return {
+            channel: "yzj",
+            ok: true,
+            messageId: result.messageId ?? "",
+          };
+        }
+        return {
+          channel: "yzj",
+          ok: false,
+          messageId: "",
+            error: result.error ?? new Error("message/send media failed"),
+        };
+      } catch (error) {
+        return {
+          channel: "yzj",
+          ok: false,
+          messageId: "",
+          error: error instanceof Error ? error : new Error(String(error)),
+        };
+      }
     },
   },
   status: {
@@ -274,10 +526,16 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
         return;
       }
 
-      let websocketUrl = "";
+      let websocketUrl: string | (() => Promise<string>) = "";
       if (account.inboundMode === "websocket") {
         try {
-          websocketUrl = deriveYZJWebSocketUrl(account.sendMsgUrl);
+          if (account.appId && account.appSecret) {
+            const tokenProvider = getYZJAccessTokenProvider(account);
+            websocketUrl = async () =>
+              deriveYZJAccessTokenWebSocketUrl(account.endpoint, await tokenProvider.getAccessToken());
+          } else {
+            websocketUrl = deriveYZJWebSocketUrl(account.sendMsgUrl);
+          }
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           ctx.log?.error(`[${account.accountId}] invalid websocket config: ${errorMessage}`);
@@ -343,10 +601,9 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
           connected: account.inboundMode === "webhook",
           configured: true,
           webhookPath: path,
-          inboundMode: account.inboundMode,
           lastStartAt: Date.now(),
           lastError: null,
-        });
+        } as any);
 
         websocketClient?.start();
 

@@ -1,9 +1,9 @@
-import type { OpenclawPluginApi } from "./src/compat.js";
-import { emptyPluginConfigSchema } from "./src/compat.js";
+import type { OpenclawPluginApi } from "./src/compat.ts";
+import { emptyPluginConfigSchema } from "./src/compat.ts";
 
-import { handleYZJWebhookRequest } from "./src/monitor.js";
-import { setYZJRuntime } from "./src/runtime.js";
-import { yzjPlugin } from "./src/channel.js";
+import { handleYZJWebhookRequest } from "./src/monitor.ts";
+import { setYZJRuntime } from "./src/runtime.ts";
+import { yzjPlugin } from "./src/channel.ts";
 
 const plugin = {
   id: "yzj",

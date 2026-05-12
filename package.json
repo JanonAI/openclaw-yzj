@@ -60,12 +60,14 @@
     "@types/ws": "^8.0.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.2.24"
+    "openclaw": ">=2026.3.22"
   },
   "scripts": {
     "test": "node --test --experimental-strip-types test/*.test.ts"
   },
   "files": [
+    "openclaw.plugin.json",
+    "clawdbot.plugin.json",
     "index.ts",
     "src/**/*",
     "package.json"

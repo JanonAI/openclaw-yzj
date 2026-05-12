@@ -6,10 +6,10 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import type { YZJIncomingMessage, YZJResponse } from "./types.js";
-import { dispatchInboundMessage } from "./inbound-dispatcher.js";
-import { verifySignature } from "./signature.js";
-import type { YZJInboundTarget } from "./inbound-dispatcher.js";
+import type { YZJIncomingMessage, YZJResponse } from "./types.ts";
+import { dispatchInboundMessage } from "./inbound-dispatcher.ts";
+import { verifySignature } from "./signature.ts";
+import type { YZJInboundTarget } from "./inbound-dispatcher.ts";
 
 type YZJWebhookTarget = YZJInboundTarget & {
   path: string;
@@ -73,6 +73,22 @@ function jsonOk(res: ServerResponse, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+function isValidIncomingMessage(value: unknown): value is YZJIncomingMessage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.type === "number"
+    && typeof record.robotId === "string"
+    && typeof record.robotName === "string"
+    && typeof record.operatorOpenid === "string"
+    && typeof record.operatorName === "string"
+    && typeof record.time === "number"
+    && typeof record.msgId === "string"
+    && typeof record.content === "string"
+    && record.content.trim().length > 0
+    && typeof record.groupType === "number"
+    && (record.groupId === undefined || typeof record.groupId === "string");
+}
+
 export function registerYZJWebhookTarget(target: YZJWebhookTarget): () => void {
   const key = normalizeWebhookPath(target.path);
   const normalizedTarget = { ...target, path: key };
@@ -119,32 +135,37 @@ export async function handleYZJWebhookRequest(
     return true;
   }
 
-  const msg = body.value as YZJIncomingMessage;
-  if (!msg.content) {
+  if (!isValidIncomingMessage(body.value)) {
     res.statusCode = 400;
     res.end("missing required fields");
     return true;
   }
+  const msg = body.value;
 
-  const secret = firstTarget.account.secret;
-  if (secret && msg.robotId !== "test-robotId") {
-    const sign = getHeader(req, "sign");
+  const sign = getHeader(req, "sign");
+  const acceptedTargets = targets.filter((target) => {
+    const secret = target.account.secret;
+    if (!secret) return true;
+
     if (!sign) {
-      firstTarget.runtime.error?.(`[yzj] 请求头中缺少 sign 签名`);
-      res.statusCode = 401;
-      res.end("missing sign header");
-      return true;
+      target.runtime.error?.(`[yzj] 请求头中缺少 sign 签名`);
+      return false;
     }
 
     const verificationResult = verifySignature(msg, sign, secret);
     if (!verificationResult.valid) {
-      firstTarget.runtime.error?.(`[yzj] 签名验证失败：${verificationResult.error}`);
-      res.statusCode = 401;
-      res.end("invalid signature");
-      return true;
+      target.runtime.error?.(`[yzj] 签名验证失败：${verificationResult.error}`);
+      return false;
     }
 
-    firstTarget.runtime.info?.(`[yzj] 签名验证通过`);
+    target.runtime.info?.(`[yzj] 签名验证通过`);
+    return true;
+  });
+
+  if (acceptedTargets.length === 0) {
+    res.statusCode = 401;
+    res.end(sign ? "invalid signature" : "missing sign header");
+    return true;
   }
 
   const response: YZJResponse = {
@@ -157,7 +178,7 @@ export async function handleYZJWebhookRequest(
   jsonOk(res, response);
 
   void Promise.all(
-    targets.map(async (target) => {
+    acceptedTargets.map(async (target) => {
       try {
         await dispatchInboundMessage(target, msg, "webhook");
       } catch (err) {

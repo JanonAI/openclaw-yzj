@@ -4,12 +4,13 @@
  * 提供交互式配置向导，帮助用户设置 YZJ Robot 账户
  */
 
-import type { ChannelSetupWizardAdapter, OpenclawConfig, WizardPrompter } from './compat.js';
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from './compat.js';
+import type { ChannelSetupWizardAdapter, OpenclawConfig, WizardPrompter } from './compat.ts';
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from './compat.ts';
 
-import { listYZJAccountIds, resolveDefaultYZJAccountId, resolveYZJAccount } from './accounts.js';
-import type { YZJInboundMode } from './types.js';
-import { normalizeYZJWebhookPath } from './onboarding-helpers.js';
+import { listYZJAccountIds, resolveDefaultYZJAccountId, resolveYZJAccount } from './accounts.ts';
+import type { YZJInboundMode } from './types.ts';
+import { normalizeYZJWebhookPath } from './onboarding-helpers.ts';
+import { DEFAULT_YZJ_ENDPOINT } from './ws-url.ts';
 
 const channel = 'yzj' as const;
 
@@ -19,11 +20,10 @@ const channel = 'yzj' as const;
 async function noteYZJConfigHelp(prompter: WizardPrompter): Promise<void> {
   await prompter.note(
     [
-      '1) 登录云之家管理后台 → 智能机器人 → 创建机器人',
-      '2) 获取机器人发送消息的 URL（sendMsgUrl）',
-      '3) 选择入站模式：webhook 或 websocket',
-      '4) 若使用 websocket，插件会自动从 sendMsgUrl 推导 WebSocket 地址',
-      '5) 你也可以使用环境变量 YZJ_SEND_MSG_URL',
+      '1) 准备云之家开放平台应用的 appId 和 appSecret',
+      '2) 入站 websocket 会用 appId/appSecret 换 accessToken，再连接 /xuntong/websocket',
+      '3) 出站会调用 /gateway/xtinterface/message/send',
+      '4) 旧 sendMsgUrl 机器人 webhook 配置仍可作为兼容模式保留',
     ].join('\n'),
     'YZJ 配置说明',
   );
@@ -50,7 +50,7 @@ export const yzjOnboardingAdapter: ChannelSetupWizardAdapter = {
     return {
       channel,
       configured,
-      statusLines: [`YZJ: ${configured ? '已配置' : '需要配置 sendMsgUrl 和 inboundMode'}`],
+      statusLines: [`YZJ: ${configured ? '已配置' : '需要配置 appId/appSecret 或 sendMsgUrl'}`],
       selectionHint: configured ? '已配置' : undefined,
       quickstartScore: configured ? 1 : 5,
     };
@@ -117,29 +117,36 @@ export const yzjOnboardingAdapter: ChannelSetupWizardAdapter = {
       ) as YZJInboundMode;
     }
 
-    // 提示输入 sendMsgUrl
-    let sendMsgUrl = resolvedAccount.sendMsgUrl;
-    if (!sendMsgUrl) {
-      sendMsgUrl = String(
+    let endpoint = resolvedAccount.endpoint;
+    endpoint = String(
+      await prompter.text({
+        message: '云之家开放平台地址',
+        initialValue: endpoint || DEFAULT_YZJ_ENDPOINT,
+        validate: (value) => (value?.trim() ? undefined : '必填'),
+      }),
+    ).trim();
+
+    let appId = resolvedAccount.appId;
+    if (!appId) {
+      appId = String(
         await prompter.text({
-          message: '输入 YZJ Robot 发送消息的 URL',
+          message: '输入云之家应用 appId',
           validate: (value) => (value?.trim() ? undefined : '必填'),
         }),
       ).trim();
-    } else {
-      const keep = await prompter.confirm({
-        message: 'sendMsgUrl 已配置，是否保留？',
-        initialValue: true,
-      });
-      if (!keep) {
-        sendMsgUrl = String(
-          await prompter.text({
-            message: '输入新的 YZJ Robot 发送消息的 URL',
-            validate: (value) => (value?.trim() ? undefined : '必填'),
-          }),
-        ).trim();
-      }
     }
+
+    let appSecret = resolvedAccount.appSecret;
+    if (!appSecret) {
+      appSecret = String(
+        await prompter.text({
+          message: '输入云之家应用 appSecret',
+          validate: (value) => (value?.trim() ? undefined : '必填'),
+        }),
+      ).trim();
+    }
+
+    const sendMsgUrl = resolvedAccount.sendMsgUrl;
 
     // 提示输入 webhook 路径
     const webhookPathHint = inboundMode === 'websocket'
@@ -176,6 +183,9 @@ export const yzjOnboardingAdapter: ChannelSetupWizardAdapter = {
           yzj: {
             ...next.channels?.yzj,
             enabled: true,
+            endpoint,
+            appId,
+            appSecret,
             sendMsgUrl,
             webhookPath,
             timeout,
@@ -196,6 +206,9 @@ export const yzjOnboardingAdapter: ChannelSetupWizardAdapter = {
               [yzjAccountId]: {
                 ...((next.channels?.yzj as any)?.accounts?.[yzjAccountId] ?? {}),
                 enabled: true,
+                endpoint,
+                appId,
+                appSecret,
                 sendMsgUrl,
                 webhookPath,
                 timeout,

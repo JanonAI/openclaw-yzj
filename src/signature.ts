@@ -4,10 +4,9 @@
  * 提供签名验证功能，确保请求来自云之家
  */
 
-import { Buffer } from 'node:buffer';
 import { createHmac } from 'node:crypto';
 
-import type { YZJIncomingMessage, SignatureVerificationResult } from "./types.js";
+import type { YZJIncomingMessage, SignatureVerificationResult } from "./types.ts";
 
 /**
  * 常量时间 Buffer 比较（防止时序攻击）
@@ -78,12 +77,14 @@ export function verifySignature(
     // 计算期望的签名
     const expectedSignature = computeHmacSha1(signatureString, secret);
 
-    if (signature == expectedSignature) {
+    const signatureBuffer = Buffer.from(signature, "utf8");
+    const expectedSignatureBuffer = Buffer.from(expectedSignature, "utf8");
+    if (timingSafeEqualBuffer(signatureBuffer, expectedSignatureBuffer)) {
       return { valid: true };
     }
     return {
       valid: false,
-      error: `signatureString: ${signatureString}\nexpectedSignature: ${expectedSignature}\nsignature: ${signature}`
+      error: "signature mismatch"
     }
   } catch (error) {
     return {

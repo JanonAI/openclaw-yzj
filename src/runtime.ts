@@ -4,7 +4,7 @@
  * 负责管理运行时引用的生命周期
  */
 
-import type { PluginRuntime } from './compat.js';
+import type { PluginRuntime } from './compat.ts';
 
 let currentRuntime: PluginRuntime | null = null;
 

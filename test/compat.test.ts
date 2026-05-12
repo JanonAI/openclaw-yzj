@@ -13,3 +13,10 @@ test("compat layer uses static openclaw plugin-sdk imports", () => {
   assert.doesNotMatch(source, /createRequire/);
   assert.doesNotMatch(source, /clawdbot\/plugin-sdk/);
 });
+
+test("compat ChannelPlugin keeps legacy setupWizard adapter type separate from SDK setupWizard", () => {
+  const source = readFileSync(new URL("../src/compat.ts", import.meta.url), "utf8");
+
+  assert.match(source, /Omit<\s*OpenClawChannelPlugin<ResolvedAccount,\s*Probe,\s*Audit>,\s*"setupWizard"\s*>/);
+  assert.match(source, /setupWizard\?: ChannelSetupWizardAdapter/);
+});

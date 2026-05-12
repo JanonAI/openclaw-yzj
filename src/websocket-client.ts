@@ -1,8 +1,13 @@
-let WebSocketImpl: typeof import("ws") | undefined;
+import type WebSocket from "ws";
+
+type WsConstructor = typeof WebSocket;
+
+let WebSocketImpl: WsConstructor | undefined;
 let wsLoadPromise: Promise<typeof import("ws")> | null = null;
+let lastWebSocketImplementation = "unresolved";
 
 function loadWs(): Promise<typeof import("ws")> {
-  if (WebSocketImpl) return Promise.resolve(WebSocketImpl);
+  if (WebSocketImpl) return wsLoadPromise ?? import("ws");
   if (wsLoadPromise) return wsLoadPromise;
   wsLoadPromise = import("ws").then((m) => {
     WebSocketImpl = m.default;
@@ -11,21 +16,21 @@ function loadWs(): Promise<typeof import("ws")> {
   return wsLoadPromise;
 }
 
-import { dispatchInboundMessage } from "./inbound-dispatcher.js";
+import { dispatchInboundMessage } from "./inbound-dispatcher.ts";
 import {
   classifyWebSocketPayload,
   DEFAULT_WEBSOCKET_HEALTH,
   getReconnectDelayMs,
   shouldReconnectAfterInvalidFrames,
-} from "./websocket-client-helpers.js";
-import type { YZJIncomingMessage, YZJLogger } from "./types.js";
-import type { YZJInboundTarget } from "./inbound-dispatcher.js";
+} from "./websocket-client-helpers.ts";
+import type { YZJIncomingMessage, YZJLogger } from "./types.ts";
+import type { YZJInboundTarget } from "./inbound-dispatcher.ts";
 export {
   classifyWebSocketPayload,
   DEFAULT_WEBSOCKET_HEALTH,
   getReconnectDelayMs,
   shouldReconnectAfterInvalidFrames,
-} from "./websocket-client-helpers.js";
+} from "./websocket-client-helpers.ts";
 
 type WebSocketLike = {
   readyState: number;
@@ -33,6 +38,8 @@ type WebSocketLike = {
   close: (code?: number, reason?: string) => void;
   addEventListener: (type: string, listener: (event: any) => void) => void;
   removeEventListener?: (type: string, listener: (event: any) => void) => void;
+  on?: (type: string, listener: (event?: any) => void) => void;
+  off?: (type: string, listener: (event?: any) => void) => void;
   ping?: () => void;
 };
 
@@ -46,7 +53,7 @@ type TimerApi = {
 };
 
 type YZJWebSocketClientOptions = {
-  url: string;
+  url: string | (() => string | Promise<string>);
   target: YZJInboundTarget;
   logger: YZJLogger;
   WebSocketFactory?: WebSocketFactory;
@@ -59,12 +66,14 @@ async function defaultWebSocketFactory(url: string): Promise<WebSocketLike> {
   try {
     await loadWs();
     if (WebSocketImpl) {
-      return new WebSocketImpl(url, { rejectUnauthorized: false }) as unknown as WebSocketLike;
+      lastWebSocketImplementation = "ws";
+      return new WebSocketImpl(url) as unknown as WebSocketLike;
     }
   } catch {
     // ws not available, fall back to native WebSocket
   }
   if (typeof globalThis.WebSocket !== "undefined") {
+    lastWebSocketImplementation = `global:${globalThis.WebSocket.name || "WebSocket"}`;
     return new globalThis.WebSocket(url) as unknown as WebSocketLike;
   }
   throw new Error("No WebSocket implementation available");
@@ -73,6 +82,17 @@ async function defaultWebSocketFactory(url: string): Promise<WebSocketLike> {
 function logInfo(logger: YZJLogger, message: string): void {
   logger.info?.(message);
   if (!logger.info) logger.log?.(message);
+}
+
+function addSocketControlListener(socket: WebSocketLike, type: "ping" | "pong", listener: () => void): void {
+  socket.addEventListener(type, listener);
+  if (typeof socket.on === "function") {
+    socket.on(type, listener);
+  }
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isControlPayload(payload: unknown): boolean {
@@ -87,8 +107,80 @@ function isControlPayload(payload: unknown): boolean {
   return ["ping", "pong", "ack", "close"].includes(type) || ["ping", "pong", "ack", "close"].includes(event);
 }
 
+function describeWebSocketError(event: unknown): string {
+  if (!event || typeof event !== "object") return String(event ?? "unknown error");
+
+  const record = event as Record<string, unknown>;
+  const error = record.error;
+  if (error instanceof Error) {
+    return error.message || error.name;
+  }
+
+  const message = typeof record.message === "string" ? record.message.trim() : "";
+  if (message) return message;
+
+  const code = typeof record.code === "string" || typeof record.code === "number"
+    ? String(record.code)
+    : "";
+  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+  if (code || reason) return [code, reason].filter(Boolean).join(" ");
+
+  return "unknown error";
+}
+
+function normalizeWebSocketData(data: unknown): string | null {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
+  }
+  return null;
+}
+
+function summarizeWebSocketPayload(payload: unknown): string {
+  if (payload === null) return "null";
+  if (payload === undefined) return "undefined";
+  if (typeof payload === "string") return `string length=${payload.length}`;
+
+  const type = typeof payload;
+  if (type !== "object") {
+    return type;
+  }
+
+  if (Array.isArray(payload)) {
+    return `array length=${payload.length}`;
+  }
+
+  const keys = Object.keys(payload as Record<string, unknown>);
+  const visibleKeys = keys.slice(0, 8).map((key) => {
+    return /token|secret|signature|password|credential/i.test(key) ? "<sensitive-key>" : key;
+  });
+  const suffix = keys.length > visibleKeys.length ? `, +${keys.length - visibleKeys.length} more` : "";
+  return `object keys=${keys.length}${visibleKeys.length ? ` [${visibleKeys.join(", ")}${suffix}]` : ""}`;
+}
+
+function safeWebSocketUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const accessToken = parsed.searchParams.get("accessToken");
+    const yzjtoken = parsed.searchParams.get("yzjtoken");
+    if (accessToken) {
+      parsed.searchParams.set("accessToken", `<hidden:${accessToken.length}:${accessToken.slice(-4)}>`);
+    }
+    if (yzjtoken) {
+      parsed.searchParams.set("yzjtoken", `<hidden:${yzjtoken.length}:${yzjtoken.slice(-4)}>`);
+    }
+    return parsed.toString();
+  } catch {
+    return url.replace(/(accessToken|yzjtoken)=([^&]+)/g, (_match, key, value) => {
+      const token = String(value);
+      return `${key}=<hidden:${token.length}:${token.slice(-4)}>`;
+    });
+  }
+}
+
 export class YZJWebSocketClient {
-  private readonly url: string;
+  private readonly url: string | (() => string | Promise<string>);
   private readonly target: YZJInboundTarget;
   private readonly logger: YZJLogger;
   private readonly createSocket: WebSocketFactory;
@@ -101,6 +193,7 @@ export class YZJWebSocketClient {
   private reconnectAttempts = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stableConnectionTimer: ReturnType<typeof setTimeout> | null = null;
   private lastMessageAt = 0;
   private lastPongAt = 0;
   private consecutiveInvalidFrames = 0;
@@ -130,41 +223,66 @@ export class YZJWebSocketClient {
     if (this.stopped) return;
 
     try {
-      const result = this.createSocket(this.url);
-      const promise = result instanceof Promise ? result : Promise.resolve(result);
+      const urlResult = typeof this.url === "function" ? this.url() : this.url;
+      const urlPromise = urlResult instanceof Promise ? urlResult : Promise.resolve(urlResult);
+      const promise = urlPromise.then((url) => {
+        if (this.stopped) return null;
+        logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket dialing ${safeWebSocketUrl(url)}`);
+        return this.createSocket(url);
+      });
       promise.then(
         (socket) => {
-          if (this.stopped) return;
+          if (!socket) return;
+          if (this.stopped) {
+            try {
+              socket.close(1000, "shutdown");
+            } catch {
+              // ignore close failures
+            }
+            return;
+          }
           this.socket = socket;
           this.bindSocket(socket);
-          logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket connecting`);
+          logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket connecting (${lastWebSocketImplementation})`);
         },
         (error) => {
-          this.scheduleReconnect(`websocket connect failed: ${error instanceof Error ? error.message : String(error)}`);
+          if (this.stopped) return;
+          this.scheduleReconnect(`websocket connect failed: ${describeError(error)}`);
         },
       );
     } catch (error) {
-      this.scheduleReconnect(`websocket connect failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.scheduleReconnect(`websocket connect failed: ${describeError(error)}`);
     }
   }
 
   private bindSocket(socket: WebSocketLike): void {
     socket.addEventListener("open", () => {
-      this.reconnectAttempts = 0;
       this.lastMessageAt = Date.now();
       this.lastPongAt = Date.now();
       this.consecutiveInvalidFrames = 0;
+      this.startStableConnectionTimer();
       this.startHeartbeat();
-      this.onReady?.();
+      this.updateReadyStatus();
       logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket connected`);
     });
 
     socket.addEventListener("message", (event: { data?: unknown }) => {
-      void this.handleMessage(event.data);
+      this.handleMessage(event.data).catch((error) => {
+        this.logger.error?.(`[${this.target.account.accountId}] yzj websocket message handling failed: ${describeError(error)}`);
+      });
     });
 
-    socket.addEventListener("error", () => {
-      this.scheduleReconnect("websocket error");
+    addSocketControlListener(socket, "ping", () => {
+      this.lastPongAt = Date.now();
+    });
+
+    addSocketControlListener(socket, "pong", () => {
+      this.lastPongAt = Date.now();
+    });
+
+    socket.addEventListener("error", (event) => {
+      const detail = describeWebSocketError(event);
+      this.scheduleReconnect(`websocket error: ${detail}`);
     });
 
     socket.addEventListener("close", () => {
@@ -174,8 +292,9 @@ export class YZJWebSocketClient {
 
   private async handleMessage(data: unknown): Promise<void> {
     this.lastMessageAt = Date.now();
+    const textData = normalizeWebSocketData(data);
 
-    if (typeof data !== "string") {
+    if (textData === null) {
       this.consecutiveInvalidFrames += 1;
       if (shouldReconnectAfterInvalidFrames(this.consecutiveInvalidFrames)) {
         this.forceReconnect("too many invalid websocket frames");
@@ -183,12 +302,12 @@ export class YZJWebSocketClient {
       return;
     }
 
-    let payload: unknown = data;
+    let payload: unknown = textData;
     try {
-      payload = JSON.parse(data);
+      payload = JSON.parse(textData);
     } catch {
-      if (isControlPayload(data)) {
-        this.handleControlPayload(data);
+      if (isControlPayload(textData)) {
+        this.handleControlPayload(textData);
         return;
       }
       this.consecutiveInvalidFrames += 1;
@@ -205,16 +324,14 @@ export class YZJWebSocketClient {
       if (classified.reason === "auth") {
         this.logger.info?.(`[${this.target.account.accountId}] yzj websocket auth success`);
       }
-      if (classified.ack && this.socket?.readyState === 1) {
-        this.socket.send(classified.ack);
-      }
+      this.sendControlFrame(classified.ack);
       return;
     }
 
     if (classified.kind !== "dispatch") {
       this.consecutiveInvalidFrames += 1;
       this.logger.warn?.(`[${this.target.account.accountId}] yzj websocket payload missing required fields`);
-      this.logger.warn?.(`[${this.target.account.accountId}] payload: ${JSON.stringify(payload)}`);
+      this.logger.warn?.(`[${this.target.account.accountId}] payload summary: ${summarizeWebSocketPayload(payload)}`);
       if (shouldReconnectAfterInvalidFrames(this.consecutiveInvalidFrames)) {
         this.forceReconnect("too many invalid websocket frames");
       }
@@ -222,16 +339,35 @@ export class YZJWebSocketClient {
     }
 
     this.consecutiveInvalidFrames = 0;
-    await dispatchInboundMessage(this.target, classified.message as YZJIncomingMessage, "websocket");
+    this.sendControlFrame(classified.ack);
+    try {
+      await dispatchInboundMessage(this.target, classified.message as YZJIncomingMessage, "websocket");
+    } catch (error) {
+      this.logger.error?.(`[${this.target.account.accountId}] yzj websocket dispatch failed: ${describeError(error)}`);
+    }
   }
 
   private handleControlPayload(payload: unknown): void {
     this.consecutiveInvalidFrames = 0;
     const normalized = typeof payload === "string"
       ? payload.trim().toLowerCase()
-      : String((payload as Record<string, unknown>).type ?? (payload as Record<string, unknown>).event ?? "").toLowerCase();
+      : String(
+          (payload as Record<string, unknown>).cmd
+            ?? (payload as Record<string, unknown>).type
+            ?? (payload as Record<string, unknown>).event
+            ?? "",
+        ).toLowerCase();
     if (normalized === "pong" || normalized === "ping") {
       this.lastPongAt = Date.now();
+    }
+  }
+
+  private sendControlFrame(frame: string | undefined): void {
+    if (!frame || this.socket?.readyState !== 1) return;
+    try {
+      this.socket.send(frame);
+    } catch (error) {
+      this.scheduleReconnect(`websocket control send failed: ${describeError(error)}`);
     }
   }
 
@@ -239,6 +375,14 @@ export class YZJWebSocketClient {
     if (this.heartbeatTimer) this.timers.clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = this.timers.setInterval(() => {
       this.checkHealth();
+    }, DEFAULT_WEBSOCKET_HEALTH.heartbeatMs);
+  }
+
+  private startStableConnectionTimer(): void {
+    if (this.stableConnectionTimer) this.timers.clearTimeout(this.stableConnectionTimer);
+    this.stableConnectionTimer = this.timers.setTimeout(() => {
+      this.reconnectAttempts = 0;
+      this.stableConnectionTimer = null;
     }, DEFAULT_WEBSOCKET_HEALTH.heartbeatMs);
   }
 
@@ -260,7 +404,15 @@ export class YZJWebSocketClient {
       else socket.send(JSON.stringify({ cmd: "ping" }));
       // logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket heartbeat sent`);
     } catch (error) {
-      this.scheduleReconnect(`websocket heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.scheduleReconnect(`websocket heartbeat failed: ${describeError(error)}`);
+    }
+  }
+
+  private updateReadyStatus(): void {
+    try {
+      this.onReady?.();
+    } catch (error) {
+      this.logger.warn?.(`[${this.target.account.accountId}] yzj websocket status update failed: ${describeError(error)}`);
     }
   }
 
@@ -273,9 +425,14 @@ export class YZJWebSocketClient {
     if (this.stopped) return;
     if (this.reconnectTimer) return;
 
-    this.onDegraded?.(message);
+    try {
+      this.onDegraded?.(message);
+    } catch (error) {
+      this.logger.warn?.(`[${this.target.account.accountId}] yzj websocket status update failed: ${describeError(error)}`);
+    }
     this.logger.warn?.(`[${this.target.account.accountId}] yzj ${message}`);
     this.clearHeartbeat();
+    this.clearStableConnectionTimer();
 
     const delay = getReconnectDelayMs(this.reconnectAttempts);
     this.reconnectAttempts += 1;
@@ -303,8 +460,15 @@ export class YZJWebSocketClient {
     this.heartbeatTimer = null;
   }
 
+  private clearStableConnectionTimer(): void {
+    if (!this.stableConnectionTimer) return;
+    this.timers.clearTimeout(this.stableConnectionTimer);
+    this.stableConnectionTimer = null;
+  }
+
   private clearTimers(): void {
     this.clearHeartbeat();
+    this.clearStableConnectionTimer();
     if (this.reconnectTimer) {
       this.timers.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
