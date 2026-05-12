@@ -121,6 +121,57 @@ wget https://github.com/JanonAI/openclaw-yzj/archive/refs/tags/v2026.3.6.zip
 openclaw plugins install ./develop.zip  # 或 ./v2026.3.6.zip
 ```
 
+
+### 方式 E：WorkBuddy 直接配置（推荐中国区用户）
+
+如果你是通过腾讯 WorkBuddy (Claw) 使用本插件，可以直接在 WorkBuddy 设置中添加云之家通道，无需手动安装 ZIP 包或运行命令行。
+
+#### 配置步骤
+
+1. 打开 WorkBuddy 设置 → 插件管理
+2. 确认 `yzj` 插件已启用（如果没有请先安装）
+3. 进入「通道」配置，添加云之家（YZJ）通道
+4. 选择 **WebSocket** 作为入站模式（推荐，自动维持长连接）
+5. 在「发送消息地址」中填入你的云之家机器人 Webhook 地址，格式为：
+   ```
+   https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=你的机器人Token
+   ```
+   > 机器人 Token（`yzjtoken` 参数）请替换为你自己的，从云之家管理后台的机器人配置页面获取。
+6. 保存配置，WorkBuddy 会自动重连
+
+#### 对应配置文件（供参考）
+
+如果你需要手动编辑 WorkBuddy 的 `settings.json`，配置如下：
+
+```json
+{
+  "enabledPlugins": {
+    "yzj@codebuddy-plugins-official": true
+  },
+  "channels": {
+    "yzj": {
+      "enabled": true,
+      "inboundMode": "websocket",
+      "sendMsgUrl": "https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=你的机器人Token",
+      "webhookPath": "/yzj/webhook",
+      "timeout": 10000
+    }
+  }
+}
+```
+
+> **重要说明**：
+> - `sendMsgUrl` 中的 Token 请务必替换为你自己的云之家机器人 Token，切勿使用他人的 Token。
+> - WebSocket 模式下，WorkBuddy 会自动从 `sendMsgUrl` 推导长连接地址，无需额外配置 WebSocket URL。
+> - 如果使用 Webhook 模式（公网可达时），需要额外配置公网可访问的 Webhook 接收地址。
+
+#### 获取云之家机器人 Token
+
+1. 登录 [云之家管理后台](https://www.yunzhijia.com/)
+2. 进入「应用管理」→「机器人」，创建或查看已有机器人的 Token
+3. 复制机器人的 Webhook 地址，填入上面的配置中
+
+
 ### 方式 D：本地开发（link）
 
 ```bash
