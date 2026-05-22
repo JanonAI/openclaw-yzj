@@ -449,6 +449,7 @@ test("business message dispatch failures are logged instead of becoming unhandle
 test("websocket parses buffer text frames before classifying business messages", async () => {
   const sockets: any[] = [];
   const dispatched: string[] = [];
+  const infos: string[] = [];
 
   class FakeSocket {
     readyState = 0;
@@ -503,7 +504,7 @@ test("websocket parses buffer text frames before classifying business messages",
       },
     } as any,
     logger: {
-      info: () => {},
+      info: (message) => infos.push(message),
       warn: () => {},
       error: () => {},
     },
@@ -544,6 +545,20 @@ test("websocket parses buffer text frames before classifying business messages",
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(dispatched, ["dispatched"]);
+  assert.equal(
+    infos.includes(`[buffer-frame-test] yzj websocket inbound body: ${JSON.stringify({
+      type: 2,
+      robotId: "robot-1",
+      robotName: "Robot",
+      operatorOpenid: "user-1",
+      operatorName: "Alice",
+      time: 1773978437058,
+      msgId: "msg-buffer-frame",
+      content: "hello",
+      groupType: 1,
+    })}`),
+    true,
+  );
 });
 
 test("stopping websocket client before async socket creation finishes closes the late socket", async () => {

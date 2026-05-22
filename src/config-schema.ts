@@ -11,6 +11,7 @@ const accountSchema = {
   type: "object",
   properties: {
     name: { type: "string" },
+    robotName: { type: "string" },
     enabled: { type: "boolean" },
     endpoint: { type: "string" },
     appId: { type: "string" },
@@ -34,6 +35,7 @@ export const yzjConfigSchema: ChannelConfigSchema = {
     type: "object",
     properties: {
       name: { type: "string" },
+      robotName: { type: "string" },
       enabled: { type: "boolean" },
       endpoint: { type: "string", default: "https://yunzhijia.com" },
       appId: { type: "string" },

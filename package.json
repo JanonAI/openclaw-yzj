@@ -5,7 +5,7 @@
   "description": "OpenClaw YZJ (Yunzhijia) intelligent bot channel plugin",
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "channel": {
       "id": "yzj",
@@ -30,7 +30,7 @@
   },
   "clawdbot": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "channel": {
       "id": "yzj",
@@ -54,6 +54,7 @@
     }
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.49",
     "ws": "^8.0.0"
   },
   "devDependencies": {
@@ -63,19 +64,23 @@
     "openclaw": ">=2026.3.22"
   },
   "scripts": {
+    "build": "node ./scripts/build.mjs",
     "test": "node --test --experimental-strip-types test/*.test.ts"
   },
   "files": [
     "openclaw.plugin.json",
     "clawdbot.plugin.json",
     "index.ts",
+    "dist/**/*",
     "src/**/*",
+    "scripts/**/*",
+    "skills/**/*",
     "package.json"
   ],
   "exports": {
     ".": {
       "types": "./index.ts",
-      "import": "./index.ts"
+      "import": "./dist/index.js"
     },
     "./src/*": {
       "types": "./src/*.ts",

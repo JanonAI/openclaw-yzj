@@ -5,7 +5,12 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ResolvedYZJAccount } from "./types.ts";
-import { buildYZJReplyParam, sendYZJAppMessage, type YZJSendByAppResult, type YZJSendByAppTarget } from "./app-message.ts";
+import {
+  buildYZJReplyParam,
+  sendYZJAppMessage,
+  type YZJSendByAppResult,
+  type YZJSendByAppTarget,
+} from "./app-message.ts";
 import { getYZJAccessTokenProvider } from "./auth-token.ts";
 import { resolveYZJEndpointUrl } from "./ws-url.ts";
 
@@ -43,8 +48,8 @@ type UploadedFile = {
   fileId: string;
 };
 
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 const MAX_REMOTE_MEDIA_BYTES = 50 * 1024 * 1024;
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 
 function normalizeMediaUrlInput(value: string): string {
   let raw = value.trim();
@@ -284,10 +289,16 @@ async function uploadYZJAppFile(
   media: LoadedMedia,
   accessToken: string,
   fetchImpl: FetchLike,
+  logger?: MediaOptions["logger"],
 ): Promise<UploadedFile> {
   const form = new FormData();
   const bytes = new Uint8Array(media.buffer);
   form.set("file", new Blob([bytes]), media.fileName);
+  const uploadBodySummary = {
+    fileName: media.fileName,
+    size: media.buffer.length,
+  };
+  logger?.info?.(`[yzj] uploadfileOpen request body: ${JSON.stringify(uploadBodySummary)}`);
 
   const response = await fetchImpl(
     resolveYZJEndpointUrl(account.endpoint, "/gateway/docrest/doc/file/uploadfileOpen"),
@@ -295,13 +306,13 @@ async function uploadYZJAppFile(
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        access_token: accessToken,
       },
       body: form,
     },
   );
 
   const responseText = await response.text();
+  logger?.info?.(`[yzj] uploadfileOpen response status=${response.status} body=${responseText}`);
   let parsed: unknown = undefined;
   if (responseText.trim()) {
     try {
@@ -406,11 +417,12 @@ export async function uploadAndSendYZJAppMedia(
   const fetchImpl = options.fetchImpl ?? fetch;
   const media = await loadYZJMedia(target, fetchImpl);
   const accessToken = await (options.tokenProvider ?? getYZJAccessTokenProvider(account)).getAccessToken();
-  const uploaded = await uploadYZJAppFile(account, media, accessToken, fetchImpl);
+  const uploaded = await uploadYZJAppFile(account, media, accessToken, fetchImpl, options.logger);
 
   if (isImageFileName(media.fileName) || isImageBuffer(media.buffer)) {
     const size = detectImageSize(media.buffer);
     const tailText = target.text?.trim() ?? "";
+    const content = tailText ? `${tailText}\n[图片]` : "[图片]";
     const param: Record<string, unknown> = {
       desc: [{ type: "image", data: uploaded.fileId, w: size.width, h: size.height }],
     };
@@ -421,7 +433,7 @@ export async function uploadAndSendYZJAppMedia(
       groupId,
       toOpenId,
       msgType: 23,
-      content: `[图片]${tailText}`,
+      content,
       param,
     }, {
       tokenProvider: { getAccessToken: async () => accessToken },

@@ -197,6 +197,7 @@ export class YZJWebSocketClient {
   private lastMessageAt = 0;
   private lastPongAt = 0;
   private consecutiveInvalidFrames = 0;
+  private missedPongs = 0;
 
   constructor(options: YZJWebSocketClientOptions) {
     this.url = options.url;
@@ -260,6 +261,7 @@ export class YZJWebSocketClient {
       this.lastMessageAt = Date.now();
       this.lastPongAt = Date.now();
       this.consecutiveInvalidFrames = 0;
+      this.missedPongs = 0;
       this.startStableConnectionTimer();
       this.startHeartbeat();
       this.updateReadyStatus();
@@ -267,17 +269,17 @@ export class YZJWebSocketClient {
     });
 
     socket.addEventListener("message", (event: { data?: unknown }) => {
-      this.handleMessage(event.data).catch((error) => {
-        this.logger.error?.(`[${this.target.account.accountId}] yzj websocket message handling failed: ${describeError(error)}`);
-      });
+      this.handleMessage(event.data);
     });
 
     addSocketControlListener(socket, "ping", () => {
       this.lastPongAt = Date.now();
+      this.missedPongs = 0;
     });
 
     addSocketControlListener(socket, "pong", () => {
       this.lastPongAt = Date.now();
+      this.missedPongs = 0;
     });
 
     socket.addEventListener("error", (event) => {
@@ -290,7 +292,7 @@ export class YZJWebSocketClient {
     });
   }
 
-  private async handleMessage(data: unknown): Promise<void> {
+  private handleMessage(data: unknown): void {
     this.lastMessageAt = Date.now();
     const textData = normalizeWebSocketData(data);
 
@@ -340,11 +342,10 @@ export class YZJWebSocketClient {
 
     this.consecutiveInvalidFrames = 0;
     this.sendControlFrame(classified.ack);
-    try {
-      await dispatchInboundMessage(this.target, classified.message as YZJIncomingMessage, "websocket");
-    } catch (error) {
+    this.logger.info?.(`[${this.target.account.accountId}] yzj websocket inbound body: ${JSON.stringify(classified.message)}`);
+    void dispatchInboundMessage(this.target, classified.message as YZJIncomingMessage, "websocket").catch((error) => {
       this.logger.error?.(`[${this.target.account.accountId}] yzj websocket dispatch failed: ${describeError(error)}`);
-    }
+    });
   }
 
   private handleControlPayload(payload: unknown): void {
@@ -359,6 +360,7 @@ export class YZJWebSocketClient {
         ).toLowerCase();
     if (normalized === "pong" || normalized === "ping") {
       this.lastPongAt = Date.now();
+      this.missedPongs = 0;
     }
   }
 
@@ -399,12 +401,18 @@ export class YZJWebSocketClient {
 
     if (socket.readyState !== 1) return;
 
+    if (this.missedPongs >= 2) {
+      this.forceReconnect(`websocket missed ${this.missedPongs} pongs`);
+      return;
+    }
+
     try {
       if (typeof socket.ping === "function") socket.ping();
       else socket.send(JSON.stringify({ cmd: "ping" }));
+      this.missedPongs += 1;
       // logInfo(this.logger, `[${this.target.account.accountId}] yzj websocket heartbeat sent`);
     } catch (error) {
-      this.scheduleReconnect(`websocket heartbeat failed: ${describeError(error)}`);
+      this.forceReconnect(`websocket heartbeat failed: ${describeError(error)}`);
     }
   }
 

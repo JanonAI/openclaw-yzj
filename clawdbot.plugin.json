@@ -1,19 +1,21 @@
 {
   "id": "yzj",
   "channels": ["yzj"],
+  "skills": ["./skills"],
   "channelConfigs": {
     "yzj": {
       "schema": {
         "type": "object",
         "properties": {
           "name": { "type": "string" },
+          "robotName": { "type": "string" },
           "enabled": { "type": "boolean" },
           "endpoint": { "type": "string", "default": "https://yunzhijia.com" },
           "appId": { "type": "string" },
           "appSecret": { "type": "string" },
           "sendMsgUrl": { "type": "string" },
           "webhookPath": { "type": "string", "default": "/yzj/webhook" },
-          "timeout": { "type": "number", "default": 10 },
+          "timeout": { "type": "number", "default": 10, "description": "HTTP request timeout in seconds." },
           "inboundMode": { "type": "string", "enum": ["webhook", "websocket"], "default": "webhook" },
           "mediaLocalRoots": {
             "type": "array",
@@ -26,13 +28,14 @@
               "type": "object",
               "properties": {
                 "name": { "type": "string" },
+                "robotName": { "type": "string" },
                 "enabled": { "type": "boolean" },
                 "endpoint": { "type": "string" },
                 "appId": { "type": "string" },
                 "appSecret": { "type": "string" },
                 "sendMsgUrl": { "type": "string" },
                 "webhookPath": { "type": "string" },
-                "timeout": { "type": "number" },
+                "timeout": { "type": "number", "description": "HTTP request timeout in seconds." },
                 "inboundMode": { "type": "string", "enum": ["webhook", "websocket"] },
                 "mediaLocalRoots": {
                   "type": "array",

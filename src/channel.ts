@@ -57,6 +57,7 @@ async function sendYZJLegacyWebhookText(params: {
     msgtype: 2,
     content: params.text,
   };
+  console.info(`[yzj] sendMsgUrl request body: ${JSON.stringify(payload)}`);
 
   const response = await fetch(params.sendMsgUrl, {
     method: "POST",
@@ -84,8 +85,28 @@ function buildOutboundReplyForDestination(destination: { toOpenId?: string; grou
     replyRootMsgId: replyMsgId,
     replySummary: "",
     replyPersonName: "",
-    replyTitle: "",
     notifyTo: toOpenId ? [toOpenId] : [],
+  };
+}
+
+function readNonEmptyContextString(context: Record<string, unknown>, key: string): string | undefined {
+  const value = context[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function buildYZJReplyFromInboundContext(context: unknown): unknown | undefined {
+  if (!context || typeof context !== "object") return undefined;
+  const record = context as Record<string, unknown>;
+  const replyMsgId = readNonEmptyContextString(record, "CurrentMessageId") ?? readNonEmptyContextString(record, "MessageSid");
+  const senderId = readNonEmptyContextString(record, "SenderId");
+  if (!replyMsgId || !senderId) return undefined;
+  return {
+    replyOpenId: senderId,
+    replyMsgId,
+    replyRootMsgId: replyMsgId,
+    replySummary: readNonEmptyContextString(record, "RawBody") ?? readNonEmptyContextString(record, "CommandBody") ?? "",
+    replyPersonName: readNonEmptyContextString(record, "SenderName") ?? "",
+    notifyTo: [senderId],
   };
 }
 
@@ -190,7 +211,7 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
     // YZJ 不支持线程回复
     resolveReplyToMode: () => "off",
     buildToolContext: ({ context, accountId, hasRepliedRef }) => {
-      const yzjReply = (context as unknown as { YZJReply?: unknown }).YZJReply;
+      const yzjReply = (context as unknown as { YZJReply?: unknown }).YZJReply ?? buildYZJReplyFromInboundContext(context);
       return {
         currentChannelId: normalizeYZJMessagingTarget(context.To ?? "") ?? undefined,
         currentChannelProvider: "yzj",
@@ -269,6 +290,8 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
             groupId: destination.groupId,
             text,
             reply: buildOutboundReplyForDestination(destination, replyToId),
+          }, {
+            logger: console,
           }));
         return {
           channel: "yzj",
@@ -320,6 +343,8 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
             mediaUrl,
             mediaLocalRoots: mergeYZJMediaLocalRoots(account.mediaLocalRoots, mediaLocalRoots),
             reply: buildOutboundReplyForDestination(destination, replyToId),
+          }, {
+            logger: console,
           }));
         if (!result.ok) {
           return {
@@ -355,6 +380,8 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
             groupId: destination.groupId,
             text,
             reply: buildOutboundReplyForDestination(destination, replyToId),
+          }, {
+            logger: console,
           }));
         if (result.ok) {
           return {
@@ -447,6 +474,8 @@ export const yzjPlugin: ChannelPlugin<ResolvedYZJAccount> = {
             mediaUrl,
             mediaLocalRoots: mergeYZJMediaLocalRoots(account.mediaLocalRoots, mediaLocalRoots),
             reply: buildOutboundReplyForDestination(destination, replyToId),
+          }, {
+            logger: console,
           }));
         if (result.ok) {
           return {

@@ -7,7 +7,7 @@ test("package.json keeps runtime dependencies limited to websocket client", () =
     dependencies?: Record<string, string>;
   };
 
-  assert.deepEqual(Object.keys(pkg.dependencies ?? {}).sort(), ["ws"]);
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}).sort(), ["@sinclair/typebox", "ws"]);
 });
 
 test("package.json includes OpenClaw plugin manifests in published package", () => {

@@ -14,6 +14,10 @@ import {
   consumeYZJOutboundDuplicateText,
   enqueueYZJOutbound,
 } from "./outbound-queue.ts";
+import {
+  clearYZJInboundReplyContextsForAccount,
+  rememberYZJInboundReplyContext,
+} from "./reply-handoff.ts";
 import type {
   ResolvedYZJAccount,
   YZJIncomingMessage,
@@ -21,6 +25,8 @@ import type {
   YZJLogger,
 } from "./types.ts";
 import { formatYZJConversationTarget } from "./targets.ts";
+import { resolveYZJEndpointUrl } from "./ws-url.ts";
+import { getYZJAccessTokenProvider } from "./auth-token.ts";
 
 export type YZJInboundSource = "webhook" | "websocket";
 
@@ -52,11 +58,27 @@ type YZJBlockReplyPayload = {
 type YZJToolStartPayload = {
   name?: string;
   phase?: string;
+  args?: unknown;
+  input?: unknown;
+  params?: unknown;
 };
 
 function logInfo(logger: YZJLogger, message: string): void {
   logger.info?.(message);
   if (!logger.info) logger.log?.(message);
+}
+
+function summarizeText(text: string, limit = 120): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function updateInboundStatus(target: YZJInboundTarget, patch: YZJInboundStatusPatch): void {
@@ -72,9 +94,41 @@ function resolveCore(target: YZJInboundTarget): PluginRuntime {
   return target.core ?? getYZJRuntime();
 }
 
+async function sendQuickExprReaction(
+  account: ResolvedYZJAccount,
+  params: { groupId: string; msgId: string },
+  logger: YZJLogger,
+): Promise<void> {
+  if (!params.msgId || !params.groupId) return;
+  // quickExpr 仅支持应用机器人（需要 appId/appSecret 换取 accesstoken）
+  if (!account.appId || !account.appSecret) return;
+  try {
+    const accessToken = await getYZJAccessTokenProvider(account).getAccessToken();
+    const url = resolveYZJEndpointUrl(account.endpoint, "/gateway/xtinterface/message/quickExpr");
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        groupId: params.groupId,
+        msgId: params.msgId,
+        action: "add",
+        expr: "[收到]",
+      }),
+    });
+    logInfo(logger, `[${account.accountId}] quickExpr response status=${resp.status}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn?.(`[${account.accountId}] quickExpr failed (ignored): ${msg}`);
+  }
+}
+
 export function clearInboundState(accountId: string): void {
   dedupeStore.clearAccount(accountId);
   clearYZJOutboundQueues();
+  clearYZJInboundReplyContextsForAccount(accountId);
 }
 
 function isPrivateRobotGroupId(groupId: string): boolean {
@@ -125,6 +179,10 @@ export async function dispatchInboundMessage(
   source: YZJInboundSource,
 ): Promise<{ duplicate: boolean }> {
   const accountId = target.account.accountId;
+  logInfo(
+    target.runtime,
+    `[${accountId}] yzj inbound dispatch start source=${source} msgId=${msg.msgId || ""} robotId=${msg.robotId || ""} robotName=${msg.robotName || ""} operatorOpenid=${msg.operatorOpenid || ""} operatorName=${msg.operatorName || ""} groupType=${msg.groupType ?? ""} groupId=${msg.groupId || ""} content="${summarizeText(msg.content || "")}"`,
+  );
   if (!dedupeStore.markSeen(accountId, msg.msgId)) {
     logInfo(target.runtime, `[${accountId}] yzj duplicate inbound dropped from ${source}: ${msg.msgId}`);
     return { duplicate: true };
@@ -146,7 +204,6 @@ async function sendYZJMessage(
     replyRootMsgId: string;
     replySummary: string;
     replyPersonName: string;
-    replyTitle?: string;
     notifyTo: string[];
   } | undefined,
 ): Promise<void> {
@@ -181,6 +238,7 @@ async function sendYZJMessage(
       msgtype: 2,
       content: text,
     };
+    target.runtime.info?.(`[yzj] sendMsgUrl request body: ${JSON.stringify(payload)}`);
 
     const response = await fetch(sendMsgUrl, {
       method: "POST",
@@ -215,7 +273,6 @@ async function sendYZJMedia(
     replyRootMsgId: string;
     replySummary: string;
     replyPersonName: string;
-    replyTitle?: string;
     notifyTo: string[];
   } | undefined,
 ): Promise<void> {
@@ -244,7 +301,7 @@ async function sendYZJMedia(
 async function startAgentForInbound(
   target: YZJInboundTarget,
   msg: YZJIncomingMessage,
-  _source: YZJInboundSource,
+  source: YZJInboundSource,
 ): Promise<void> {
   const { account, config } = target;
   const core = resolveCore(target);
@@ -263,6 +320,14 @@ async function startAgentForInbound(
   });
   const conversationTarget = formatYZJConversationTarget(conversation);
 
+  // Send quick expression reaction before agent processing (only for group chats; errors silently ignored)
+  if (conversation.chatType === "group") {
+    await sendQuickExprReaction(account, {
+      groupId: msg.groupId?.trim() || "",
+      msgId,
+    }, target.runtime);
+  }
+
   let replyData = undefined;
   if (msgId.length > 0) {
     replyData = {
@@ -271,9 +336,16 @@ async function startAgentForInbound(
       replyRootMsgId: msgId,
       replySummary: content,
       replyPersonName: operatorName,
-      replyTitle: "",
       notifyTo: [operatorOpenid],
     };
+  }
+  if (replyData) {
+    rememberYZJInboundReplyContext({
+      accountId: account.accountId,
+      conversationId: conversationTarget,
+      messageId: msgId,
+      reply: replyData,
+    });
   }
 
   const route = core.channel.routing.resolveAgentRoute({
@@ -283,9 +355,18 @@ async function startAgentForInbound(
     peer: conversation.routePeer,
   });
 
+  logInfo(
+    target.runtime,
+    `[${account.accountId}] yzj inbound route resolved source=${source} msgId=${msgId} chatType=${conversation.chatType} conversationTarget=${conversationTarget} routePeer=${safeJson(conversation.routePeer)} agentId=${route.agentId} routeAccountId=${route.accountId ?? ""} sessionKey=${route.sessionKey}`,
+  );
+
   const storePath = core.channel.session.resolveStorePath(config.session?.store, {
     agentId: route.agentId,
   });
+  logInfo(
+    target.runtime,
+    `[${account.accountId}] yzj agent context prepared msgId=${msgId} agentId=${route.agentId} accountId=${account.accountId} storePath=${storePath} sender=${operatorName}/${operatorOpenid} replyTo=${conversationTarget}`,
+  );
 
   const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(config);
   const previousTimestamp = core.channel.session.readSessionUpdatedAt({
@@ -349,6 +430,7 @@ async function startAgentForInbound(
   const outboundTasks: Promise<void>[] = [];
   const queuedBlockReplyTexts = new Map<string, number>();
   const sentTextKeys = new Set<string>();
+  try {
   const enqueueOutbound = (task: () => Promise<void>): Promise<void> => {
     const queued = enqueueYZJOutbound(outboundQueueKey, task);
     outboundTasks.push(queued);
@@ -379,6 +461,10 @@ async function startAgentForInbound(
     if (hasSentText(fullMessage)) return;
     if (consumeYZJOutboundDuplicateText({ queueKey: outboundQueueKey, turnId, text: fullMessage })) return;
     rememberSentText(fullMessage);
+    logInfo(
+      target.runtime,
+      `[${account.accountId}] yzj agent ordinary outbound text msgId=${msgId} agentId=${route.agentId} chatType=${conversation.chatType} groupId=${conversation.groupIdForSend} toOpenId=${conversation.toOpenIdForSend} text="${summarizeText(fullMessage)}"`,
+    );
     await enqueueOutbound(() => sendYZJMessage(target, conversation.toOpenIdForSend, conversation.groupIdForSend, fullMessage, replyData));
   };
   const flushPartialText = async (): Promise<void> => {
@@ -400,6 +486,10 @@ async function startAgentForInbound(
       },
       onToolStart: async (payload: YZJToolStartPayload) => {
         if (payload.phase && payload.phase !== "start") return;
+        logInfo(
+          target.runtime,
+          `[${account.accountId}] yzj agent tool start msgId=${msgId} agentId=${route.agentId} tool=${payload.name ?? ""} payload=${safeJson(payload)}`,
+        );
         await flushPartialText();
       },
       onBlockReplyQueued: async (payload: YZJBlockReplyPayload) => {
@@ -427,6 +517,10 @@ async function startAgentForInbound(
           }
           for (const mediaUrl of mediaUrls) {
             if (mediaUrl?.trim()) {
+              logInfo(
+                target.runtime,
+                `[${account.accountId}] yzj agent media outbound msgId=${msgId} agentId=${route.agentId} chatType=${conversation.chatType} groupId=${conversation.groupIdForSend} toOpenId=${conversation.toOpenIdForSend} mediaUrl=${mediaUrl.trim()} text="${summarizeText(text)}"`,
+              );
               await enqueueOutbound(() => sendYZJMedia(target, conversation.toOpenIdForSend, conversation.groupIdForSend, text, mediaUrl.trim(), mediaLocalRoots, replyData));
             }
           }
@@ -451,4 +545,8 @@ async function startAgentForInbound(
   await flushBufferedText();
   await Promise.all(outboundTasks);
   clearYZJOutboundTurnTexts({ queueKey: outboundQueueKey, turnId });
+  } finally {
+    queuedBlockReplyTexts.clear();
+    sentTextKeys.clear();
+  }
 }

@@ -28,7 +28,7 @@ test("buildYZJSendByAppPayload targets groupId for V12Controller message/send", 
   );
 });
 
-test("buildYZJSendByAppPayload adds replyOpenId param for replying to user message", () => {
+test("buildYZJSendByAppPayload references user message with reply params", () => {
   assert.deepEqual(
     buildYZJSendByAppPayload({
       groupId: "group-1",
@@ -47,13 +47,42 @@ test("buildYZJSendByAppPayload adds replyOpenId param for replying to user messa
       msgType: 2,
       content: "收到",
       param: {
-        replyOpenId: "open-1",
-        replyMsgId: "msg-1",
-        replyRootMsgId: "root-1",
         replySummary: "今天深圳天气",
         replyPersonName: "用户",
-        replyTitle: "",
+        replyMsgId: "msg-1",
+        replyRootMsgId: "root-1",
         notifyTo: ["open-1"],
+        replyOpenId: "open-1",
+      },
+    },
+  );
+});
+
+test("buildYZJSendByAppPayload references robot messages with replyOpenId", () => {
+  assert.deepEqual(
+    buildYZJSendByAppPayload({
+      groupId: "group-1",
+      text: "我需要确认任务范围",
+      reply: {
+        replyOpenId: "BOT-robot-boss",
+        replyMsgId: "BOT-transfer-1",
+        replyRootMsgId: "BOT-transfer-1",
+        replySummary: "@应用测试515 请处理这个任务",
+        replyPersonName: "王振宇V12测试513",
+        notifyTo: ["BOT-robot-boss"],
+      },
+    }),
+    {
+      groupId: "group-1",
+      msgType: 2,
+      content: "我需要确认任务范围",
+      param: {
+        replySummary: "@应用测试515 请处理这个任务",
+        replyPersonName: "王振宇V12测试513",
+        replyMsgId: "BOT-transfer-1",
+        replyRootMsgId: "BOT-transfer-1",
+        notifyTo: ["BOT-robot-boss"],
+        replyOpenId: "BOT-robot-boss",
       },
     },
   );
@@ -183,7 +212,7 @@ test("sendYZJAppTextMessage posts to V12Controller message/send with bearer toke
   });
 });
 
-test("sendYZJAppMessage does not log V12Controller message/send request body", async () => {
+test("sendYZJAppMessage logs V12Controller message/send request body", async () => {
   const logs: string[] = [];
 
   await sendYZJAppMessage(account, {
@@ -199,7 +228,24 @@ test("sendYZJAppMessage does not log V12Controller message/send request body", a
     fetchImpl: async () => new Response(JSON.stringify({ success: true, data: { msgId: "msg-1" } }), { status: 200 }),
   } as any);
 
-  assert.deepEqual(logs, []);
+  const prefix = "[yzj] message/send request body: ";
+  const requestLog = logs.find((item) => item.startsWith(prefix));
+  assert.ok(requestLog);
+  assert.deepEqual(JSON.parse(requestLog.slice(prefix.length)), {
+    msgType: 23,
+    toOpenId: "open-1",
+    content: "[图片]hello",
+    param: {
+      desc: [{ type: "image", data: "file-1", w: 800, h: 600 }],
+    },
+  });
+  assert.equal(
+    logs.some((item) => item === `[yzj] message/send response status=200 body=${JSON.stringify({
+      success: true,
+      data: { msgId: "msg-1" },
+    })}`),
+    true,
+  );
 });
 
 test("buildYZJSendByAppMessagePayload passes file message fields from AppV12Controller examples", () => {
@@ -237,7 +283,6 @@ test("sendYZJAppMessage can send rich text image payload through message/send", 
     param: {
       desc: [{ type: "image", data: "file-1", w: 800, h: 600 }],
     },
-    msgLen: 8,
   }, {
     tokenProvider: { getAccessToken: async () => "token-1" },
     fetchImpl: async (url, init) => {
@@ -254,6 +299,5 @@ test("sendYZJAppMessage can send rich text image payload through message/send", 
     param: {
       desc: [{ type: "image", data: "file-1", w: 800, h: 600 }],
     },
-    msgLen: 8,
   });
 });

@@ -167,6 +167,7 @@ export async function handleYZJWebhookRequest(
     res.end(sign ? "invalid signature" : "missing sign header");
     return true;
   }
+  firstTarget.runtime.info?.(`[yzj] webhook inbound body: ${JSON.stringify(msg)}`);
 
   const response: YZJResponse = {
     success: true,

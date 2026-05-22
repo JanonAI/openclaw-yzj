@@ -35,7 +35,6 @@ function createYZJToolContext(turnId: string, replySummary = "发给我一个猫
       replyRootMsgId: turnId,
       replySummary,
       replyPersonName: "用户",
-      replyTitle: "",
       notifyTo: ["open-1"],
     },
   };
@@ -462,6 +461,7 @@ test("dispatchInboundMessage allows media payloads from agent workspace roots", 
     }, "websocket");
 
     assert.equal(calls.length, 3);
+    assert.ok(calls[0]!.url.endsWith("/api/oauth2_v12/auth/getAppAccessToken"));
     assert.equal(calls[1]!.url, "https://dev.kdweibo.cn/gateway/docrest/doc/file/uploadfileOpen");
     const msgId = JSON.parse(String(calls[2]!.init.body)).param.replyMsgId;
     assert.deepEqual(JSON.parse(String(calls[2]!.init.body)), {
@@ -480,7 +480,6 @@ test("dispatchInboundMessage allows media payloads from agent workspace roots", 
         replyRootMsgId: msgId,
         replySummary: "把 txt 发给我",
         replyPersonName: "用户",
-        replyTitle: "",
         notifyTo: ["open-1"],
       },
     });
@@ -560,7 +559,7 @@ test("dispatchInboundMessage preserves reply order when text is followed by medi
     assert.equal(sendBodies.length, 2);
     assert.equal((sendBodies[0] as any).msgType, 2);
     assert.equal((sendBodies[1] as any).msgType, 23);
-    assert.equal((sendBodies[1] as any).content, "[图片]图片如下：");
+    assert.equal((sendBodies[1] as any).content, "图片如下：\n[图片]");
   } finally {
     globalThis.fetch = originalFetch;
     if (previousContent === undefined) {
@@ -633,7 +632,7 @@ test("dispatchInboundMessage preserves reply order between buffered text and mes
     assert.equal((sendBodies[0] as any).msgType, 2);
     assert.equal((sendBodies[0] as any).content, "我先抓一下行情，再给你做个小图。");
     assert.equal((sendBodies[1] as any).msgType, 23);
-    assert.equal((sendBodies[1] as any).content, "[图片]行情小图。");
+    assert.equal((sendBodies[1] as any).content, "行情小图。\n[图片]");
   } finally {
     globalThis.fetch = originalFetch;
     if (previousContent === undefined) {
@@ -708,13 +707,14 @@ test("dispatchInboundMessage sends ordinary assistant progress text before later
 
     assert.deepEqual(requestOrder, ["send:2", "upload", "send:23"]);
     assert.deepEqual(sendBodies[1].param, {
-      desc: [{ type: "image", data: "image-message-1", w: 800, h: 600 }],
+      desc: [
+        { type: "image", data: "image-message-1", w: 800, h: 600 },
+      ],
       replyOpenId: "open-1",
       replyMsgId: msgId,
       replyRootMsgId: msgId,
       replySummary: "发给我一个猫的图片",
       replyPersonName: "用户",
-      replyTitle: "",
       notifyTo: ["open-1"],
     });
   } finally {
@@ -787,7 +787,7 @@ test("dispatchInboundMessage preserves final text after message tool media in ge
 
     assert.equal(sendBodies.length, 2);
     assert.equal((sendBodies[0] as any).msgType, 23);
-    assert.equal((sendBodies[0] as any).content, "[图片]金蝶国际今日走势图。");
+    assert.equal((sendBodies[0] as any).content, "金蝶国际今日走势图。\n[图片]");
     assert.equal((sendBodies[1] as any).msgType, 2);
     assert.equal((sendBodies[1] as any).content, "我把图再发一次。金蝶国际今天盘中是偏强的。");
   } finally {
@@ -860,7 +860,7 @@ test("dispatchInboundMessage skips duplicate final text already sent as media ca
 
     assert.equal(sendBodies.length, 1);
     assert.equal((sendBodies[0] as any).msgType, 23);
-    assert.equal((sendBodies[0] as any).content, "[图片]给你一只猫");
+    assert.equal((sendBodies[0] as any).content, "给你一只猫\n[图片]");
   } finally {
     globalThis.fetch = originalFetch;
     if (previousContent === undefined) {
@@ -931,7 +931,7 @@ test("dispatchInboundMessage preserves block text after message tool media in ge
 
     assert.equal(sendBodies.length, 2);
     assert.equal((sendBodies[0] as any).msgType, 23);
-    assert.equal((sendBodies[0] as any).content, "[图片]给你一只猫。");
+    assert.equal((sendBodies[0] as any).content, "给你一只猫。\n[图片]");
     assert.equal((sendBodies[1] as any).msgType, 2);
     assert.equal((sendBodies[1] as any).content, "我再按云之家当前会话账号重发一次，用文件方式试。");
   } finally {

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { yzjMessageActions } from "../src/actions.ts";
 import { clearInboundState, dispatchInboundMessage } from "../src/inbound-dispatcher.ts";
 
 function createCoreDeliveringFinalText(text: string): any {
@@ -61,7 +62,20 @@ test("dispatchInboundMessage continues processing when status sink throws", asyn
         mediaLocalRoots: [],
         config: {},
       },
-      config: {},
+      config: {
+        channels: {
+          yzj: {
+            enabled: true,
+            endpoint: "https://dev.kdweibo.cn",
+            accounts: {
+              app2: {
+                appId: "app-2",
+                appSecret: "secret-2",
+              },
+            },
+          },
+        },
+      },
       runtime: {
         warn: (message: string) => warnings.push(message),
       },
@@ -116,7 +130,20 @@ test("dispatchInboundMessage binds context AccountId to inbound account instead 
         mediaLocalRoots: [],
         config: {},
       },
-      config: {},
+      config: {
+        channels: {
+          yzj: {
+            enabled: true,
+            endpoint: "https://dev.kdweibo.cn",
+            accounts: {
+              app2: {
+                appId: "app-2",
+                appSecret: "secret-2",
+              },
+            },
+          },
+        },
+      },
       runtime: {
         info: (message: string) => logs.push(message),
       },
@@ -163,8 +190,11 @@ test("dispatchInboundMessage binds context AccountId to inbound account instead 
 
     assert.equal(capturedContexts.length, 1);
     assert.equal(capturedContexts[0]!.AccountId, "personal");
-    assert.deepEqual(logs, []);
+    assert.equal(logs.some((line) => line.includes("yzj inbound dispatch start")), true);
+    assert.equal(logs.some((line) => line.includes("yzj inbound route resolved") && line.includes("agentId=main")), true);
+    assert.equal(logs.some((line) => line.includes("yzj agent context prepared") && line.includes("accountId=personal")), true);
   } finally {
     clearInboundState("personal");
   }
 });
+

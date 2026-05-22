@@ -40,7 +40,6 @@ test("uploadAndSendYZJAppMedia uploads mp4 and sends it as msgType 8 file", asyn
   assert.equal(calls[0]!.url, "https://dev.kdweibo.cn/gateway/docrest/doc/file/uploadfileOpen");
   assert.deepEqual(calls[0]!.init.headers, {
     Authorization: "Bearer token-1",
-    access_token: "token-1",
   });
   assert.equal(calls[1]!.url, "https://dev.kdweibo.cn/gateway/xtinterface/message/send");
   assert.deepEqual(JSON.parse(String(calls[1]!.init.body)), {
@@ -101,7 +100,6 @@ test("uploadAndSendYZJAppMedia keeps reply param on file sends", async () => {
       replyRootMsgId: "msg-1",
       replySummary: "今天深圳天气",
       replyPersonName: "用户",
-      replyTitle: "",
       notifyTo: ["open-1"],
     },
   });
@@ -131,9 +129,55 @@ test("uploadAndSendYZJAppMedia sends png as msgType 23 rich image", async () => 
   assert.deepEqual(JSON.parse(String(calls[1]!.init.body)), {
     groupId: "group-1",
     msgType: 23,
-    content: "[图片]hello",
+    content: "hello\n[图片]",
     param: {
       desc: [{ type: "image", data: "image-file-1", w: 1, h: 1 }],
+    },
+  });
+});
+
+test("uploadAndSendYZJAppMedia keeps reply param and visible at on rich image sends", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+
+  const result = await uploadAndSendYZJAppMedia(account, {
+    groupId: "group-1",
+    text: "深圳天气图",
+    mediaBuffer: oneByOnePng,
+    fileName: "weather.png",
+    reply: {
+      replyOpenId: "open-1",
+      replyMsgId: "msg-1",
+      replyRootMsgId: "msg-1",
+      replySummary: "@王振宇V12测试513 今日深圳天气变化 弄一张图片发给我",
+      replyPersonName: "杨好",
+      notifyTo: ["open-1"],
+    },
+  }, {
+    tokenProvider: { getAccessToken: async () => "token-1" },
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init: init as RequestInit });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({ success: true, data: { fileId: "image-file-1" } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ success: true, data: { msgId: "msg-2" } }), { status: 200 });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(String(calls[1]!.init.body)), {
+    groupId: "group-1",
+    msgType: 23,
+    content: "深圳天气图\n[图片]",
+    param: {
+      desc: [
+        { type: "image", data: "image-file-1", w: 1, h: 1 },
+      ],
+      replyOpenId: "open-1",
+      replyMsgId: "msg-1",
+      replyRootMsgId: "msg-1",
+      replySummary: "@王振宇V12测试513 今日深圳天气变化 弄一张图片发给我",
+      replyPersonName: "杨好",
+      notifyTo: ["open-1"],
     },
   });
 });
@@ -161,7 +205,7 @@ test("uploadAndSendYZJAppMedia detects extensionless png bytes as rich image", a
   assert.deepEqual(JSON.parse(String(calls[1]!.init.body)), {
     toOpenId: "open-1",
     msgType: 23,
-    content: "[图片]hello",
+    content: "hello\n[图片]",
     param: {
       desc: [{ type: "image", data: "image-file-1", w: 1, h: 1 }],
     },

@@ -18,8 +18,6 @@ export type YZJSendByAppTarget = {
     replyRootMsgId?: string;
     replySummary?: string;
     replyPersonName?: string;
-    replyTitle?: string;
-    isReference?: boolean;
     notifyTo?: string[];
   };
 };
@@ -27,11 +25,10 @@ export type YZJSendByAppTarget = {
 export type YZJSendByAppMessageTarget = {
   groupId?: string;
   toOpenId?: string;
-  msgType: 2 | 8 | 23 | 25;
+  msgType: 2 | 8 | 23;
   content?: string;
   param?: Record<string, unknown>;
   clientMsgId?: string;
-  msgLen?: number;
 };
 
 type SendOptions = {
@@ -51,33 +48,27 @@ export type YZJSendByAppResult = {
 export function buildYZJReplyParam(reply: NonNullable<YZJSendByAppTarget["reply"]>): Record<string, unknown> {
   const notifyTo = reply.notifyTo?.map((item) => item.trim()).filter(Boolean) ?? [];
   const param: Record<string, unknown> = {
-    replyMsgId: reply.replyMsgId,
-    replyRootMsgId: reply.replyRootMsgId || reply.replyMsgId,
     replySummary: reply.replySummary ?? "",
     replyPersonName: reply.replyPersonName ?? "",
-    replyTitle: reply.replyTitle ?? "",
+    replyMsgId: reply.replyMsgId,
+    replyRootMsgId: reply.replyRootMsgId || reply.replyMsgId,
     notifyTo,
   };
   if (reply.replyOpenId?.trim()) {
     param.replyOpenId = reply.replyOpenId.trim();
-  } else if (reply.isReference) {
-    param.isReference = true;
   }
   return param;
 }
 
 export function buildYZJSendByAppPayload(target: YZJSendByAppTarget): Record<string, unknown> {
-  const payload = buildYZJSendByAppMessagePayload({
+  const replyParam = target.reply?.replyMsgId ? buildYZJReplyParam(target.reply) : undefined;
+  return buildYZJSendByAppMessagePayload({
     groupId: target.groupId,
     toOpenId: target.toOpenId,
     msgType: 2,
     content: target.text,
+    param: replyParam,
   });
-  const reply = target.reply;
-  if (reply?.replyMsgId) {
-    payload.param = buildYZJReplyParam(reply);
-  }
-  return payload;
 }
 
 export function buildYZJSendByAppMessagePayload(target: YZJSendByAppMessageTarget): Record<string, unknown> {
@@ -98,7 +89,6 @@ export function buildYZJSendByAppMessagePayload(target: YZJSendByAppMessageTarge
   if (target.content !== undefined) payload.content = target.content;
   if (target.param !== undefined) payload.param = target.param;
   if (target.clientMsgId?.trim()) payload.clientMsgId = target.clientMsgId.trim();
-  if (typeof target.msgLen === "number") payload.msgLen = target.msgLen;
 
   return payload;
 }
@@ -121,6 +111,7 @@ export async function sendYZJAppMessage(
     const accessToken = await (options.tokenProvider ?? getYZJAccessTokenProvider(account)).getAccessToken();
     const fetchImpl = options.fetchImpl ?? fetch;
     const body = buildYZJSendByAppMessagePayload(target);
+    options.logger?.info?.(`[yzj] message/send request body: ${JSON.stringify(body)}`);
     const response = await fetchImpl(
       resolveYZJEndpointUrl(account.endpoint, "/gateway/xtinterface/message/send"),
       {
@@ -134,6 +125,7 @@ export async function sendYZJAppMessage(
     );
 
     const responseText = await response.text();
+    options.logger?.info?.(`[yzj] message/send response status=${response.status} body=${responseText}`);
     let parsed: unknown = undefined;
     if (responseText.trim()) {
       try {
@@ -177,6 +169,5 @@ export async function sendYZJAppTextMessage(
     content: payload.content as string | undefined,
     param: payload.param as Record<string, unknown> | undefined,
     clientMsgId: payload.clientMsgId as string | undefined,
-    msgLen: payload.msgLen as number | undefined,
   }, options);
 }

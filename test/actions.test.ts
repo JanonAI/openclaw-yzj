@@ -22,7 +22,7 @@ test("yzj personal robot media unsupported message is user-facing", () => {
   );
 });
 
-test("yzj message send action advertises media send support when configured", () => {
+test("yzj message send action advertises send action when configured", () => {
   const discovery = yzjMessageActions.describeMessageTool({
     cfg: {
       channels: {
@@ -38,6 +38,15 @@ test("yzj message send action advertises media send support when configured", ()
 
   assert.deepEqual(discovery?.actions, ["send"]);
   assert.deepEqual(discovery?.capabilities, []);
+  assert.equal(discovery?.schema, null);
+});
+
+test("yzj agent prompt includes media and target hints", () => {
+  const hints = yzjPlugin.agentPrompt?.messageToolHints?.({} as any).join("\n") ?? "";
+
+  assert.match(hints, /message/);
+  assert.match(hints, /mediaUrl/);
+  assert.match(hints, /YZJ inbound turn/);
 });
 
 test("yzj message send action sends local image path as media", async () => {
@@ -85,7 +94,7 @@ test("yzj message send action sends local image path as media", async () => {
     assert.deepEqual(JSON.parse(String(calls[2]!.init.body)), {
       toOpenId: "open-1",
       msgType: 23,
-      content: "[图片]图片测试",
+      content: "图片测试\n[图片]",
       param: {
         desc: [{ type: "image", data: "image-file-1", w: 800, h: 600 }],
       },
@@ -357,7 +366,9 @@ test("resolveYZJSendTarget distinguishes direct and group prefixes", () => {
 
 test("yzj outbound sendPayload sends mediaUrl through uploadfileOpen and message/send", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
+  const logs: string[] = [];
   const originalFetch = globalThis.fetch;
+  const originalInfo = console.info;
   globalThis.fetch = (async (url, init) => {
     calls.push({ url: String(url), init: init as RequestInit });
     if (calls.length === 1) {
@@ -368,6 +379,9 @@ test("yzj outbound sendPayload sends mediaUrl through uploadfileOpen and message
     }
     return new Response(JSON.stringify({ success: true, data: { msgId: "msg-1" } }), { status: 200 });
   }) as typeof fetch;
+  console.info = (...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  };
 
   try {
     assert.ok(yzjPlugin.outbound?.sendPayload);
@@ -398,13 +412,16 @@ test("yzj outbound sendPayload sends mediaUrl through uploadfileOpen and message
     assert.deepEqual(JSON.parse(String(calls[2]!.init.body)), {
       toOpenId: "open-1",
       msgType: 23,
-      content: "[图片]图片测试",
+      content: "图片测试\n[图片]",
       param: {
         desc: [{ type: "image", data: "image-file-1", w: 800, h: 600 }],
       },
     });
+    assert.equal(logs.some((item) => item.startsWith("[yzj] uploadfileOpen request body: ")), true);
+    assert.equal(logs.some((item) => item.startsWith("[yzj] message/send request body: ")), true);
   } finally {
     globalThis.fetch = originalFetch;
+    console.info = originalInfo;
   }
 });
 
@@ -561,7 +578,7 @@ test("yzj outbound sendMedia marks legacy media unsupported notice as successful
   }
 });
 
-test("yzj outbound sendText does not log sendMsgUrl request body for legacy webhook mode", async () => {
+test("yzj outbound sendText logs sendMsgUrl request body for legacy webhook mode", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const logs: string[] = [];
   const originalFetch = globalThis.fetch;
@@ -596,7 +613,12 @@ test("yzj outbound sendText does not log sendMsgUrl request body for legacy webh
       msgtype: 2,
       content: "深圳天气",
     });
-    assert.deepEqual(logs, []);
+    assert.deepEqual(logs, [
+      `[yzj] sendMsgUrl request body: ${JSON.stringify({
+        msgtype: 2,
+        content: "深圳天气",
+      })}`,
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
     console.info = originalInfo;
@@ -605,7 +627,9 @@ test("yzj outbound sendText does not log sendMsgUrl request body for legacy webh
 
 test("yzj outbound sendText strips user prefix before app message/send", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
+  const logs: string[] = [];
   const originalFetch = globalThis.fetch;
+  const originalInfo = console.info;
   globalThis.fetch = (async (url, init) => {
     calls.push({ url: String(url), init: init as RequestInit });
     if (String(url).endsWith("/api/oauth2_v12/auth/getAppAccessToken")) {
@@ -613,6 +637,9 @@ test("yzj outbound sendText strips user prefix before app message/send", async (
     }
     return new Response(JSON.stringify({ success: true, data: { msgId: "msg-1" } }), { status: 200 });
   }) as typeof fetch;
+  console.info = (...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  };
 
   try {
     assert.ok(yzjPlugin.outbound?.sendText);
@@ -639,14 +666,29 @@ test("yzj outbound sendText strips user prefix before app message/send", async (
       toOpenId: "open-1",
       content: "给你一只猫",
     });
+    assert.equal(logs.some((item) => item === `[yzj] message/send request body: ${JSON.stringify({
+        msgType: 2,
+        toOpenId: "open-1",
+        content: "给你一只猫",
+      })}`), true);
+    assert.equal(
+      logs.some((item) => item === `[yzj] message/send response status=200 body=${JSON.stringify({
+        success: true,
+        data: { msgId: "msg-1" },
+      })}`),
+      true,
+    );
   } finally {
     globalThis.fetch = originalFetch;
+    console.info = originalInfo;
   }
 });
 
 test("yzj outbound sendMedia adds reply param for app file messages", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
+  const logs: string[] = [];
   const originalFetch = globalThis.fetch;
+  const originalInfo = console.info;
   globalThis.fetch = (async (url, init) => {
     calls.push({ url: String(url), init: init as RequestInit });
     if (String(url).endsWith("/api/oauth2_v12/auth/getAppAccessToken")) {
@@ -657,6 +699,9 @@ test("yzj outbound sendMedia adds reply param for app file messages", async () =
     }
     return new Response(JSON.stringify({ success: true, data: { msgId: "msg-1" } }), { status: 200 });
   }) as typeof fetch;
+  console.info = (...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  };
 
   try {
     assert.ok(yzjPlugin.outbound?.sendMedia);
@@ -697,12 +742,14 @@ test("yzj outbound sendMedia adds reply param for app file messages", async () =
         replyRootMsgId: "msg-1",
         replySummary: "",
         replyPersonName: "",
-        replyTitle: "",
         notifyTo: ["open-1"],
       },
     });
+    assert.equal(logs.some((item) => item.startsWith("[yzj] uploadfileOpen request body: ")), true);
+    assert.equal(logs.some((item) => item.startsWith("[yzj] message/send request body: ")), true);
   } finally {
     globalThis.fetch = originalFetch;
+    console.info = originalInfo;
   }
 });
 

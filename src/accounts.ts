@@ -54,12 +54,18 @@ export function listYZJAccountIds(cfg: OpenclawConfig): string[] {
 
 /**
  * 解析默认 YZJ 账户ID
+ * 若配置中的 defaultAccount 不在已知账户列表内，则忽略并 fallback，避免静默指向未配置账户。
  */
 export function resolveDefaultYZJAccountId(cfg: OpenclawConfig): string {
   const yzjConfig = cfg.channels?.yzj as YZJConfig | undefined;
-  if (yzjConfig?.defaultAccount?.trim()) return yzjConfig.defaultAccount.trim();
-  if (shouldSplitTopLevelRobots(cfg)) return APP_ACCOUNT_ID;
+  const declared = yzjConfig?.defaultAccount?.trim();
   const ids = listYZJAccountIds(cfg);
+  if (declared) {
+    const match = ids.find((id) => id.toLowerCase() === declared.toLowerCase());
+    if (match) return match;
+    console.warn(`[yzj] defaultAccount="${declared}" not found in configured accounts [${ids.join(",")}]; falling back`);
+  }
+  if (shouldSplitTopLevelRobots(cfg)) return APP_ACCOUNT_ID;
   if (ids.includes(DEFAULT_ACCOUNT_ID)) return DEFAULT_ACCOUNT_ID;
   return ids[0] ?? DEFAULT_ACCOUNT_ID;
 }
@@ -137,7 +143,9 @@ export function resolveYZJAccount(params: {
   const appId = merged.appId?.trim() || '';
   const appSecret = merged.appSecret?.trim() || '';
   const webhookPath = merged.webhookPath?.trim() || `/yzj/webhook/${accountId}`;
-  const timeout = merged.timeout ?? 10000;
+  // schema 中 timeout 单位为秒（默认 10），下游统一使用毫秒
+  const timeoutSeconds = typeof merged.timeout === 'number' && Number.isFinite(merged.timeout) ? merged.timeout : 10;
+  const timeout = Math.max(0, Math.round(timeoutSeconds * 1000));
   const inboundMode = resolveInboundMode(merged, params.cfg.channels?.yzj as YZJConfig | undefined);
   const mediaLocalRoots = Array.isArray(merged.mediaLocalRoots)
     ? merged.mediaLocalRoots.map((item) => item.trim()).filter(Boolean)

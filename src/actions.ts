@@ -4,7 +4,7 @@ import { extractToolSend } from "openclaw/plugin-sdk/tool-send";
 import type { ChannelMessageActionAdapter } from "openclaw/plugin-sdk/channel-contract";
 
 import type { OpenclawConfig } from "./compat.ts";
-import { resolveYZJAccount } from "./accounts.ts";
+import { resolveYZJAccount, listYZJAccountIds } from "./accounts.ts";
 import { sendYZJAppTextMessage, type YZJSendByAppTarget } from "./app-message.ts";
 import { YZJ_MEDIA_UNSUPPORTED_MESSAGE } from "./media-unsupported.ts";
 import { uploadAndSendYZJAppMedia } from "./media-message.ts";
@@ -14,6 +14,10 @@ import {
   enqueueYZJOutbound,
   markYZJOutboundTextSent,
 } from "./outbound-queue.ts";
+import {
+  getYZJInboundReplyContext,
+  getYZJLatestInboundReplyContext,
+} from "./reply-handoff.ts";
 import { resolveYZJSendTarget } from "./targets.ts";
 import type { ResolvedYZJAccount } from "./types.ts";
 
@@ -22,6 +26,19 @@ function isLocalMediaRootsDeniedError(error: unknown): boolean {
   return error instanceof Error
     && error.message.startsWith("Local file access denied")
     && error.message.includes("mediaLocalRoots");
+}
+
+function summarizeText(text: string, limit = 120): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 async function sendYZJWebhookText(account: ResolvedYZJAccount, target: {
@@ -38,6 +55,7 @@ async function sendYZJWebhookText(account: ResolvedYZJAccount, target: {
     msgtype: 2,
     content: target.text,
   };
+  console.info(`[yzj] sendMsgUrl request body: ${JSON.stringify(payload)}`);
 
   const response = await fetch(account.sendMsgUrl, {
     method: "POST",
@@ -103,18 +121,44 @@ function readYZJToolContextReply(toolContext: unknown): YZJSendByAppTarget["repl
     replyRootMsgId: typeof record.replyRootMsgId === "string" ? record.replyRootMsgId : undefined,
     replySummary: typeof record.replySummary === "string" ? record.replySummary : undefined,
     replyPersonName: typeof record.replyPersonName === "string" ? record.replyPersonName : undefined,
-    replyTitle: typeof record.replyTitle === "string" ? record.replyTitle : undefined,
-    isReference: typeof record.isReference === "boolean" ? record.isReference : undefined,
     notifyTo,
   };
 }
 
+function resolveYZJToolReply(toolContext: unknown): YZJSendByAppTarget["reply"] | undefined {
+  if (!toolContext || typeof toolContext !== "object") return undefined;
+  const currentMessageId = (toolContext as Record<string, unknown>).currentMessageId;
+  const messageId = typeof currentMessageId === "string" ? currentMessageId : undefined;
+  const contextReply = readYZJToolContextReply(toolContext);
+  if (contextReply) return contextReply;
+  return getYZJInboundReplyContext(messageId);
+}
+
+function resolveYZJLatestToolReply(params: {
+  toolContext: unknown;
+  accountId?: string;
+  conversationId?: string;
+}): YZJSendByAppTarget["reply"] | undefined {
+  const reply = resolveYZJToolReply(params.toolContext);
+  if (reply) return reply;
+  return getYZJLatestInboundReplyContext({
+    accountId: params.accountId,
+    conversationId: params.conversationId,
+  });
+}
+
 export const yzjMessageActions: ChannelMessageActionAdapter = {
   describeMessageTool: ({ cfg }) => {
-    const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig });
-    if (!account.enabled || !account.configured) {
+    const openclawConfig = cfg as OpenclawConfig;
+    const accountIds = listYZJAccountIds(openclawConfig);
+    const anyConfigured = accountIds.some((id) => {
+      const acc = resolveYZJAccount({ cfg: openclawConfig, accountId: id });
+      return acc.enabled && acc.configured;
+    });
+    if (!anyConfigured) {
       return { actions: [], capabilities: [], schema: null };
     }
+    console.info(`[yzj] message tool discovery accounts=${accountIds.join(",")} actions=send`);
     return {
       actions: Array.from(SUPPORTED_ACTIONS) as any,
       capabilities: [],
@@ -129,6 +173,9 @@ export const yzjMessageActions: ChannelMessageActionAdapter = {
     }
 
     const sendParams = readYZJSendParams(params);
+    console.info(
+      `[yzj] message action received action=${action} accountId=${accountId ?? ""} params=${safeJson(params)} toolContext=${safeJson(toolContext)}`,
+    );
     const rawTarget = sendParams.to.trim() || toolContext?.currentChannelId?.trim() || "";
     const target = resolveYZJSendTarget(rawTarget);
     if (!target.toOpenId && !target.groupId) {
@@ -139,9 +186,17 @@ export const yzjMessageActions: ChannelMessageActionAdapter = {
     }
 
     const contextAccountId = readYZJToolContextAccountId(toolContext);
-    const reply = readYZJToolContextReply(toolContext);
     const effectiveAccountId = contextAccountId ?? accountId;
-    const account = resolveYZJAccount({ cfg: cfg as OpenclawConfig, accountId: effectiveAccountId });
+    const openclawConfig = cfg as OpenclawConfig;
+    const account = resolveYZJAccount({ cfg: openclawConfig, accountId: effectiveAccountId });
+    const reply = resolveYZJLatestToolReply({
+      toolContext,
+      accountId: account.accountId,
+      conversationId: rawTarget,
+    });
+    console.info(
+      `[yzj] message action target resolved account=${account.accountId} effectiveAccountId=${effectiveAccountId ?? ""} rawTarget=${rawTarget} groupId=${target.groupId ?? ""} toOpenId=${target.toOpenId ?? ""} media=${sendParams.mediaUrl ? "yes" : "no"} text="${summarizeText(sendParams.text)}"`,
+    );
     const queueKey = buildYZJOutboundQueueKey({
       accountId: account.accountId,
       groupId: target.groupId,
@@ -175,10 +230,13 @@ export const yzjMessageActions: ChannelMessageActionAdapter = {
             fileName: sendParams.fileName,
             mediaLocalRoots: mergeYZJMediaLocalRoots(account.mediaLocalRoots, mediaLocalRoots),
             reply,
+          }, {
+            logger: console,
           });
           if (!result.ok) {
             throw result.error ?? new Error("message/send media failed");
           }
+          console.info(`[yzj] message action media send result ok=true messageId=${result.messageId ?? ""}`);
           return jsonResult({ ok: true, messageId: result.messageId ?? "" });
         } catch (error) {
           if (isLocalMediaRootsDeniedError(error)) {
@@ -202,6 +260,7 @@ export const yzjMessageActions: ChannelMessageActionAdapter = {
           text: sendParams.text,
           reply,
         });
+        console.info("[yzj] message action legacy text send result ok=true");
         return jsonResult({ ok: true, messageId: "" });
       }
 
@@ -210,10 +269,13 @@ export const yzjMessageActions: ChannelMessageActionAdapter = {
         groupId: target.groupId,
         text: sendParams.text,
         reply,
+      }, {
+        logger: console,
       });
       if (!result.ok) {
         throw result.error ?? new Error("message/send failed");
       }
+      console.info(`[yzj] message action text send result ok=true messageId=${result.messageId ?? ""}`);
       return jsonResult({ ok: true, messageId: result.messageId ?? "" });
     });
   },

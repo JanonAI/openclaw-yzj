@@ -75,6 +75,8 @@ export interface YZJAccountConfig {
   enabled?: boolean;
   /** 账户名称 */
   name?: string;
+  /** 云之家群机器人真实名称，用于 @ 展示名兜底 */
+  robotName?: string;
   /** 云之家开放平台地址 */
   endpoint?: string;
   /** 云之家应用 ID */
