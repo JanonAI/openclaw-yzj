@@ -75,13 +75,24 @@ openclaw gateway restart
 
 ### 方式 C：从 GitHub 安装
 
+> ⚠️ **重要**：仓库与 GitHub archive 包均不含 `dist/` 目录（已被 `.gitignore` 排除）。
+> 从源码安装前**必须先执行 `npm install && npm run build`** 生成 `dist/index.js`，
+> 否则会报错 `extension entry not found: ./dist/index.js`。
+> 如需开箱即用的预构建包，请使用 [Release 资源](https://github.com/JanonAI/openclaw-yzj/releases) 中的 `openclaw-yzj.zip`（参见方式 A）。
+
 **方法 1：克隆仓库**
 
 ```bash
 # 克隆仓库
 git clone https://github.com/JanonAI/openclaw-yzj.git
+cd openclaw-yzj
+
+# 安装依赖并构建（必须，生成 dist/index.js）
+npm install
+npm run build
 
 # 安装插件
+cd ..
 openclaw plugins install ./openclaw-yzj
 openclaw plugins enable yzj
 openclaw gateway restart
@@ -89,12 +100,21 @@ openclaw gateway restart
 
 **方法 2：下载 ZIP 压缩包**
 
-```bash
-# 下载压缩包
-wget https://github.com/JanonAI/openclaw-yzj/archive/refs/heads/main.zip
+GitHub 自动打包的 archive zip 同样不含 `dist/`，需要解压后构建：
 
-# 安装插件（不需要解压）
-openclaw plugins install ./main.zip
+```bash
+# 下载并解压
+wget https://github.com/JanonAI/openclaw-yzj/archive/refs/heads/main.zip
+unzip main.zip
+cd openclaw-yzj-main
+
+# 安装依赖并构建
+npm install
+npm run build
+
+# 安装插件（指向已构建目录，而非 zip）
+cd ..
+openclaw plugins install ./openclaw-yzj-main
 openclaw plugins enable yzj
 openclaw gateway restart
 ```
@@ -102,11 +122,10 @@ openclaw gateway restart
 或者使用 curl：
 
 ```bash
-# 下载压缩包
 curl -L https://github.com/JanonAI/openclaw-yzj/archive/refs/heads/main.zip -o main.zip
-
-# 安装插件（不需要解压）
-openclaw plugins install ./main.zip
+unzip main.zip
+cd openclaw-yzj-main && npm install && npm run build && cd ..
+openclaw plugins install ./openclaw-yzj-main
 openclaw plugins enable yzj
 openclaw gateway restart
 ```
@@ -114,19 +133,25 @@ openclaw gateway restart
 **安装特定版本**：
 
 ```bash
-# 下载特定分支
+# 下载特定分支或标签
 wget https://github.com/JanonAI/openclaw-yzj/archive/refs/heads/develop.zip
+# 或 wget https://github.com/JanonAI/openclaw-yzj/archive/refs/tags/v2026.3.6.zip
 
-# 下载特定标签/版本
-wget https://github.com/JanonAI/openclaw-yzj/archive/refs/tags/v2026.3.6.zip
-
-# 安装
-openclaw plugins install ./develop.zip  # 或 ./v2026.3.6.zip
+# 同样需要解压 → npm install && npm run build → 再 install 目录
+unzip develop.zip
+cd openclaw-yzj-develop && npm install && npm run build && cd ..
+openclaw plugins install ./openclaw-yzj-develop
 ```
 
 ### 方式 D：本地开发（link）
 
 ```bash
+# 首次或源码变更后均需重新构建
+cd extensions/yzj
+npm install
+npm run build
+cd ../..
+
 openclaw plugins install --link extensions/yzj
 openclaw plugins enable yzj
 openclaw gateway restart
@@ -609,7 +634,6 @@ channels:
 | 文件 | `8` | 应用机器人支持 |
 | 视频 | `8` | 应用机器人支持，mp4 按文件消息发送 |
 | 富文本 | `23` | 应用机器人支持，可用于图片等内容 |
-| 交互卡片 | `25` | 应用机器人支持 |
 
 说明：个人机器人 `sendMsgUrl` 模式只支持文本；文件、图片、mp4 视频需要应用机器人模式。
 
@@ -839,7 +863,7 @@ index.ts (入口)
 - **运行时**: Node.js (ESM 模块系统)
 - **开发语言**: TypeScript
 - **HTTP 处理**: Node.js 原生 `http` 模块（`IncomingMessage`, `ServerResponse`）
-- **类型验证**: Zod v4.3.6 + JSON Schema
+- **类型验证**: TypeBox v0.34 + JSON Schema
 - **平台支持**: OpenClaw / ClawDBot（双平台兼容）
 - **依赖管理**: npm
 
@@ -929,7 +953,7 @@ interface YZJAppMessage {
 
 - 支持条件验证：有 `accounts` 时 `sendMsgUrl` 可选
 - 默认值自动设置：`webhookPath`、`timeout`
-- 类型安全：通过 Zod 进行运行时验证
+- 类型安全：通过 TypeBox 进行运行时验证
 
 #### 平台兼容（src/compat.ts）
 
@@ -951,7 +975,7 @@ interface YZJAppMessage {
 | 特性 | YZJ | WeCom |
 |------|-----|-------|
 | 消息加密 | 无 | AES 加密 |
-| 签名验证 | 无 | Token 签名 |
+| 签名验证 | HmacSHA1（可选） | Token 签名 |
 | 主动发送 | ✅ 支持 | ❌ 仅回调回复 |
 | 流式响应 | ❌ 不支持 | ✅ 支持 |
 | Webhook 验证 | 无需验证 | 需验证签名 |
@@ -971,7 +995,7 @@ interface YZJAppMessage {
 - OpenClaw 插件元数据: `openclaw.plugin.json`
 - ClawDBot 插件元数据: `clawdbot.plugin.json`
 - 文档路径: `/channels/yzj`
-- 支持的扩展: `./index.ts`
+- 支持的扩展: `./dist/index.js`（由 `npm run build` 从 `index.ts` 编译生成）
 
 **统计信息**
 - 核心模块数: 20+ 个

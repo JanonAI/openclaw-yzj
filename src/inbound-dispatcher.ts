@@ -320,13 +320,11 @@ async function startAgentForInbound(
   });
   const conversationTarget = formatYZJConversationTarget(conversation);
 
-  // Send quick expression reaction before agent processing (only for group chats; errors silently ignored)
-  if (conversation.chatType === "group") {
-    await sendQuickExprReaction(account, {
-      groupId: msg.groupId?.trim() || "",
-      msgId,
-    }, target.runtime);
-  }
+  // Send quick expression reaction before agent processing (errors silently ignored)
+  await sendQuickExprReaction(account, {
+    groupId: msg.groupId?.trim() || "",
+    msgId,
+  }, target.runtime);
 
   let replyData = undefined;
   if (msgId.length > 0) {
