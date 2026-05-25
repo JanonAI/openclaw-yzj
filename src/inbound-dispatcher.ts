@@ -117,12 +117,23 @@ async function sendQuickExprReaction(
         action: "add",
         expr: "[收到]",
       }),
+      signal: AbortSignal.timeout(8_000),
     });
     logInfo(logger, `[${account.accountId}] quickExpr response status=${resp.status}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn?.(`[${account.accountId}] quickExpr failed (ignored): ${msg}`);
   }
+}
+
+function triggerQuickExprReaction(target: YZJInboundTarget, msg: YZJIncomingMessage): void {
+  void sendQuickExprReaction(target.account, {
+    groupId: msg.groupId?.trim() || "",
+    msgId: msg.msgId?.trim() || "",
+  }, target.runtime).catch((err) => {
+    const msgText = err instanceof Error ? err.message : String(err);
+    target.runtime.warn?.(`[${target.account.accountId}] quickExpr failed (ignored): ${msgText}`);
+  });
 }
 
 export function clearInboundState(accountId: string): void {
@@ -189,6 +200,10 @@ export async function dispatchInboundMessage(
   }
 
   updateInboundStatus(target, { lastInboundAt: Date.now() });
+  await sendQuickExprReaction(target.account, {
+    groupId: msg.groupId?.trim() || "",
+    msgId: msg.msgId?.trim() || "",
+  }, target.runtime);
   await startAgentForInbound(target, msg, source);
   return { duplicate: false };
 }
@@ -319,12 +334,6 @@ async function startAgentForInbound(
     robotId,
   });
   const conversationTarget = formatYZJConversationTarget(conversation);
-
-  // Send quick expression reaction before agent processing (errors silently ignored)
-  await sendQuickExprReaction(account, {
-    groupId: msg.groupId?.trim() || "",
-    msgId,
-  }, target.runtime);
 
   let replyData = undefined;
   if (msgId.length > 0) {

@@ -1,5 +1,7 @@
 # 通讯录
 
+用户没有指定 endpoint 时，默认用 `https://yunzhijia.com`。
+
 ## 命令表
 
 | 能力 | 命令 | 说明 |
@@ -9,7 +11,9 @@
 | 按 openId 获取用户 | `contact user get --open-id <OPEN_ID>` | `--open-id` 可重复传多个。 |
 | 获取当前授权人 | `contact user get` | 用于检查当前用户登录态。 |
 
-`contact user get` 不传 `--open-id` 用于证明当前是用户授权。命令失败时，按用户登录检查流程处理，先走 `auth login --device` 获取登录地址和授权码；发给用户后等待用户下一条消息提醒。
+`contact user get` 不传 `--open-id` 用于证明当前是用户授权。命令失败时，按用户登录检查流程处理：自己执行 `yzj-cli --endpoint <ENDPOINT> auth login --device`，把返回的授权链接和设备码发给用户，等用户下一条消息确认后重试。注意：auth login 也必须带 `--endpoint`。
+
+命令报错时按 `errors.md` 处理。
 
 ## 命令示例
 

@@ -1,6 +1,6 @@
 export const DEFAULT_WEBSOCKET_HEALTH = {
-  heartbeatMs: 15_000,
-  staleMs: 45_000,
+  heartbeatMs: 5_000,
+  staleMs: 12_000,
 } as const;
 
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000] as const;
