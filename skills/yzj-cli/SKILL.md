@@ -24,7 +24,7 @@ where yzj-cli
 如果找不到命令，再安装：
 
 ```cmd
-npm install -g @yunzhijia/cli --registry=http://npm.yzjop.com
+npm install -g @yunzhijia/cli 
 ```
 
 2. 确定 endpoint：
